@@ -164,30 +164,98 @@ def is_memecoin_pair(p):
     score,_=memecoin_score(p)
     return score >= 35
 
+def lp_opportunity_score(h1, h24, m5, volume_1h, liquidity, txns, buy_ratio):
+    """
+    Balanced LP score 0..100.
+
+    This is a discovery-stage proxy, not an estimated fee APR:
+    - Fee potential: turnover relative to liquidity.
+    - Range quality: rewards activity without extreme directional movement.
+    - Volatility quality: moderate movement beats both dead and explosive markets.
+    - Liquidity quality: larger pools get more stability weight.
+    - Activity: transaction density.
+    - Directional risk: strong one-way moves are penalized.
+    """
+    vol_liq = safe_div(volume_1h, max(liquidity, 1), 0)
+    fee_potential = score01(math.log1p(max(vol_liq, 0)) / math.log1p(20))
+
+    abs_move = abs(h1)
+    short_move = abs(m5)
+    # Sweet spot for a balanced LP: active but not already running away.
+    range_quality = (
+        0.55 * (1 - score01(max(abs_move - 4, 0) / 46)) +
+        0.25 * (1 - score01(max(short_move - 2, 0) / 18)) +
+        0.20 * (1 - score01(max(abs(h24) - 20, 0) / 120))
+    )
+    range_quality = clamp(range_quality, 0, 1)
+
+    # Moderate volatility is useful for fees; extreme movement raises escape/IL risk.
+    movement = 0.45 * abs_move + 0.25 * short_move + 0.30 * abs(h24)
+    volatility_quality = clamp(1 - abs(movement - 18) / 45, 0, 1)
+
+    liquidity_quality = score01(math.log1p(max(liquidity, 0)) / math.log1p(2_000_000))
+    activity = score01(math.log1p(max(txns, 0)) / math.log1p(10_000))
+
+    balance = 1 - min(abs(buy_ratio - 0.5) / 0.5, 1)
+    directional_risk = 1 - score01(
+        max(abs(h1) - 8, 0) / 42 +
+        max(abs(m5) - 5, 0) / 25
+    )
+
+    components = {
+        "fee_potential": round(100 * fee_potential, 2),
+        "range_quality_proxy": round(100 * range_quality, 2),
+        "volatility_quality": round(100 * volatility_quality, 2),
+        "liquidity_quality": round(100 * liquidity_quality, 2),
+        "activity": round(100 * activity, 2),
+        "directional_safety": round(100 * directional_risk, 2),
+    }
+
+    score = 100 * (
+        0.25 * fee_potential +
+        0.25 * range_quality +
+        0.15 * volatility_quality +
+        0.15 * liquidity_quality +
+        0.10 * activity +
+        0.10 * directional_risk
+    )
+    # Balanced LP prefers two-sided flow. Do not destroy the score for momentum.
+    score *= 0.92 + 0.08 * balance
+    return clamp(score, 0, 100), components
+
+
 def rank_pair(p):
     ch=p.get("priceChange") or {}; vol=p.get("volume") or {}; tx=p.get("txns") or {}
     h1=float(ch.get("h1") or 0); m5=float(ch.get("m5") or 0)
+    h24=float(ch.get("h24") or 0)
     v1=float(vol.get("h1") or 0); liq=float((p.get("liquidity") or {}).get("usd") or 0)
     t1=tx.get("h1") or {}; buys=int(t1.get("buys") or 0); sells=int(t1.get("sells") or 0)
+    txns=buys+sells
     created=p.get("pairCreatedAt") or int(time.time()*1000); age_h=max(0,(time.time()*1000-created)/3600000)
     buy_ratio=safe_div(buys,buys+sells,.5); vol_liq=v1/max(liq,1)
-    s=continuation_score(h1,v1,liq,buys+sells,buys,sells,age_h,m5)
-    s-=clamp(max(0,m5-12)/35,0,1)*15
-    s-=clamp((25_000-liq)/25_000,0,1)*20
-    meme_score,meme_reasons=memecoin_score(p)
-    final_score=clamp(0.72*s + 0.28*meme_score,0,100)
 
-    return final_score,{"price":float(p.get("priceUsd") or 0),"h1":h1,"m5":m5,
-      "h6":float(ch.get("h6") or 0),"h24":float(ch.get("h24") or 0),"v1":v1,
+    lp_score, lp_components = lp_opportunity_score(
+        h1, h24, m5, v1, liq, txns, buy_ratio
+    )
+    meme_score,meme_reasons=memecoin_score(p)
+
+    # Meme identity is a gate/ranking tie-breaker, not the main LP objective.
+    discovery_score=clamp(0.82*lp_score + 0.18*meme_score, 0, 100)
+
+    return discovery_score,{
+      "price":float(p.get("priceUsd") or 0),"h1":h1,"m5":m5,
+      "h6":float(ch.get("h6") or 0),"h24":h24,"v1":v1,
       "v24":float(vol.get("h24") or 0),"liquidity":liq,"buy_ratio":buy_ratio,
       "vol_liq":vol_liq,"age_h":age_h,"pair":p.get("pairAddress"),"dex":p.get("dexId"),
       "url":p.get("url"),"base":p.get("baseToken",{}).get("symbol"),
-      "name":p.get("baseToken",{}).get("name"),
-      "quote":p.get("quoteToken",{}).get("symbol"),"score":final_score,
+      "name":p.get("baseToken",{}).get("name"),"quote":p.get("quoteToken",{}).get("symbol"),
+      "score":discovery_score,"lp_score":lp_score,"lp_strategy":"BALANCED",
+      "lp_components":lp_components,
       "memecoin_score":meme_score,"meme_reasons":meme_reasons,
       "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"},
       "token":(p.get("baseToken") or {}).get("address"),
-      "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))}
+      "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))
+    }
 
 def fetch_search_pairs():
     """Broad Solana discovery with token-level diversity."""
@@ -266,7 +334,7 @@ def scan(limit=40,only_meteora=False):
 
     rows=sorted(
         by_token.values(),
-        key=lambda x:(x["score"],x["memecoin_score"],x["v1"],x["liquidity"]),
+        key=lambda x:(x["lp_score"],x["score"],x["memecoin_score"],x["v1"],x["liquidity"]),
         reverse=True
     )[:limit]
 
@@ -283,6 +351,8 @@ def scan(limit=40,only_meteora=False):
             "memecoin_score_min":35,
             "unique_tokens":True,
             "memecoin_only":True,
+            "lp_strategy":"balanced-risk-adjusted",
+            "lp_score_primary":True,
             "gmgn_enabled":False,
             "gmgn_mode":"web-reference-only",
             "only_meteora":only_meteora
