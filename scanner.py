@@ -27,7 +27,7 @@ FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
 
 
 def fetch_seed_tokens():
-    """Fast DexScreener discovery: latest/top boosted Solana tokens only."""
+    """Fast DexScreener discovery across all chains."""
     paths = (
         "/token-boosts/latest/v1",
         "/token-boosts/top/v1",
@@ -49,13 +49,14 @@ def fetch_seed_tokens():
         if err:
             errors.append({"stage": "seed-feed", "error": err})
         for item in items:
-            if not isinstance(item, dict) or item.get("chainId") != "solana":
+            if not isinstance(item, dict):
                 continue
+            chain = str(item.get("chainId") or "").strip().lower()
             address = item.get("tokenAddress")
-            if address:
+            if chain and address:
                 address = str(address)
-                out[address.lower()] = {
-                    "chainId": "solana",
+                out[f"{chain}:{address.lower()}"] = {
+                    "chainId": chain,
                     "tokenAddress": address,
                 }
 
@@ -89,7 +90,8 @@ def fetch_pairs_fallback(tokens):
     def one(token):
         try:
             data = get_json(
-                DEX_URL + "/token-pairs/v1/solana/" +
+                DEX_URL + "/token-pairs/v1/" +
+                urllib.parse.quote(str(token.get("chainId") or "").strip().lower(), safe="") + "/" +
                 urllib.parse.quote(token["tokenAddress"], safe="")
             )
             return data if isinstance(data, list) else [], None
@@ -114,7 +116,8 @@ def fetch_dexscreener_pairs():
         "expanded_tokens": 0,
         "expanded_pairs": 0,
         "fallback_pairs": 0,
-        "solana_pairs": 0,
+        "pairs": 0,
+        "chains": {},
         "errors": [],
     }
 
@@ -135,13 +138,15 @@ def fetch_dexscreener_pairs():
 
     unique = {}
     for pair in pairs:
-        if not isinstance(pair, dict) or pair.get("chainId") != "solana":
+        if not isinstance(pair, dict):
             continue
+        chain = str(pair.get("chainId") or "").strip().lower()
         address = pair.get("pairAddress")
-        if address:
-            unique[str(address)] = pair
+        if chain and address:
+            unique[f"{chain}:{address}"] = pair
+            diag["chains"][chain] = int(diag["chains"].get(chain, 0)) + 1
 
-    diag["solana_pairs"] = len(unique)
+    diag["pairs"] = len(unique)
     diag["batch_failures"] = failed_batches
     return list(unique.values()), diag
 
@@ -961,7 +966,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
 
     funnel = {
         "discovered": len(discovered),
-        "solana": 0,
+        "chains": 0,
         "token_data": 0,
         "age": 0,
         "volume": 0,
@@ -976,9 +981,10 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
 
     for p in discovered:
         try:
-            if p.get("chainId") != "solana":
+            chain = str(p.get("chainId") or "").strip().lower()
+            if not chain:
                 continue
-            funnel["solana"] += 1
+            funnel["chains"] = funnel.get("chains", 0) + 1
 
             base = p.get("baseToken") or {}
             token = str(base.get("address") or "").strip()
