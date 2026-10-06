@@ -4,7 +4,7 @@ import json, math, random, time, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dlmm_lp_engine import Candle, math_engine, classify_regime, range_engine, bootstrap_monte_carlo, risk_engine
 
-UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=8
+UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=5
 import os
 
 GMGN_WEB_URL="https://gmgn.ai/sol/token/"
@@ -27,84 +27,62 @@ FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
 
 
 def fetch_seed_tokens():
-    """Discover broad Solana token candidates from DexScreener feeds."""
+    """Fast DexScreener discovery: latest/top boosted Solana tokens only."""
     paths = (
         "/token-boosts/latest/v1",
         "/token-boosts/top/v1",
-        "/token-profiles/latest/v1",
     )
 
     def one(path):
         try:
             data = get_json(DEX_URL + path)
-            items = data if isinstance(data, list) else []
-            return path, items, None
-        except Exception as exc:
-            return path, [], str(exc)[:180]
-
-    out = {}
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        results = list(pool.map(one, paths))
-
-    errors = []
-    for path, items, err in results:
-        if err:
-            errors.append({"stage": path, "error": err})
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if item.get("chainId") != "solana":
-                continue
-            address = item.get("tokenAddress")
-            if not address:
-                continue
-            address = str(address)
-            out[address.lower()] = {
-                "chainId": "solana",
-                "tokenAddress": address,
-            }
-
-    # Keep the discovery request bounded for Vercel/serverless execution.
-    return list(out.values())[:90], errors
-
-
-def fetch_pairs_batch(tokens):
-    """Resolve candidates through DexScreener's multi-token endpoint."""
-    if not tokens:
-        return [], 0, []
-
-    batches = [tokens[i:i + 30] for i in range(0, len(tokens), 30)]
-
-    def one(batch):
-        addresses = ",".join(t["tokenAddress"] for t in batch)
-        try:
-            data = get_json(
-                DEX_URL + "/latest/dex/tokens/" +
-                urllib.parse.quote(addresses, safe=",")
-            )
-            pairs = data.get("pairs") or [] if isinstance(data, dict) else []
-            return pairs, None
+            return data if isinstance(data, list) else [], None
         except Exception as exc:
             return [], str(exc)[:180]
 
-    all_pairs = []
-    failed = 0
+    out = {}
     errors = []
-    # Parallel batches prevent a slow feed from making the Vercel function
-    # look like a blank scanner.
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for pairs, err in pool.map(one, batches):
-            all_pairs.extend(pairs)
-            if err:
-                failed += 1
-                if len(errors) < 8:
-                    errors.append({"stage": "token-batch", "error": err})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(one, paths))
 
-    return all_pairs, failed, errors
+    for items, err in results:
+        if err:
+            errors.append({"stage": "seed-feed", "error": err})
+        for item in items:
+            if not isinstance(item, dict) or item.get("chainId") != "solana":
+                continue
+            address = item.get("tokenAddress")
+            if address:
+                address = str(address)
+                out[address.lower()] = {
+                    "chainId": "solana",
+                    "tokenAddress": address,
+                }
+
+    # One batch keeps the Vercel request bounded and mirrors Tool-Trade's
+    # DexScreener discovery pattern.
+    return list(out.values())[:30], errors
+
+
+def fetch_pairs_batch(tokens):
+    """Resolve up to 30 discovered tokens in one DexScreener request."""
+    if not tokens:
+        return [], 0, []
+
+    addresses = ",".join(t["tokenAddress"] for t in tokens[:30])
+    try:
+        data = get_json(
+            DEX_URL + "/latest/dex/tokens/" +
+            urllib.parse.quote(addresses, safe=",")
+        )
+        pairs = data.get("pairs") or [] if isinstance(data, dict) else []
+        return pairs, 0, []
+    except Exception as exc:
+        return [], 1, [{"stage": "token-batch", "error": str(exc)[:180]}]
 
 
 def fetch_pairs_fallback(tokens):
-    """Bounded per-token fallback using another DexScreener pair endpoint."""
+    """Small bounded fallback if the batch endpoint fails."""
     if not tokens:
         return [], []
 
@@ -120,8 +98,8 @@ def fetch_pairs_fallback(tokens):
 
     out = []
     errors = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(one, tokens[:48]))
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(one, tokens[:12]))
     for pairs, err in results:
         out.extend(pairs)
         if err and len(errors) < 8:
@@ -149,21 +127,15 @@ def fetch_dexscreener_pairs():
     diag["expanded_pairs"] = len(pairs)
     diag["errors"].extend(batch_errors[:8])
 
-    # Only spend extra requests when the main token endpoint failed or
-    # returned nothing. This keeps the scanner fast on Vercel.
-    fallback = []
-    fallback_errors = []
-    if not pairs or failed_batches:
-        fallback, fallback_errors = fetch_pairs_fallback(tokens[:24])
+    if not pairs and tokens:
+        fallback, fallback_errors = fetch_pairs_fallback(tokens)
         diag["fallback_pairs"] = len(fallback)
         diag["errors"].extend(fallback_errors[:8])
         pairs.extend(fallback)
 
     unique = {}
     for pair in pairs:
-        if not isinstance(pair, dict):
-            continue
-        if pair.get("chainId") != "solana":
+        if not isinstance(pair, dict) or pair.get("chainId") != "solana":
             continue
         address = pair.get("pairAddress")
         if address:
