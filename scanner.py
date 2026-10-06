@@ -71,3 +71,106 @@ if __name__=="__main__":
  import argparse
  ap=argparse.ArgumentParser();ap.add_argument("--limit",type=int,default=40);ap.add_argument("--meteora",action="store_true");a=ap.parse_args()
  print(json.dumps(scan(a.limit,a.meteora),indent=2))
+
+
+def fetch_ohlcv(pool_address, limit=200):
+    """Fetch public OHLCV history for review. GeckoTerminal uses DexScreener pair/pool addresses."""
+    base = "https://api.geckoterminal.com/api/v2/networks/solana/pools/"
+    endpoints = [
+        f"{base}{urllib.parse.quote(pool_address, safe='')}/ohlcv/minute?aggregate=5&limit={min(limit,1000)}",
+        f"{base}{urllib.parse.quote(pool_address, safe='')}/ohlcv/hour?aggregate=1&limit={min(limit,1000)}",
+    ]
+    for url in endpoints:
+        try:
+            data = get_json(url)
+            rows = ((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+            candles = []
+            for row in rows:
+                if len(row) < 6:
+                    continue
+                ts, open_, high, low, close, volume = row[:6]
+                candles.append({
+                    "timestamp": int(ts),
+                    "open": float(open_),
+                    "high": float(high),
+                    "low": float(low),
+                    "close": float(close),
+                    "volume": float(volume),
+                })
+            if len(candles) >= 20:
+                return list(reversed(candles))
+        except Exception:
+            pass
+    raise RuntimeError("Riwayat OHLCV tidak tersedia untuk pool ini.")
+
+def review_pair(pool_address, fee_apr=0, horizon_bars=24, mc_paths=1500):
+    from dlmm_lp_engine import Candle, math_engine, classify_regime, range_engine, bootstrap_monte_carlo
+
+    candles_raw = fetch_ohlcv(pool_address, 200)
+    candles = [Candle(**x) for x in candles_raw]
+    metrics = math_engine(candles)
+    regime = classify_regime(metrics)
+    closes = [x.close for x in candles]
+    range_plan = range_engine(metrics, regime, closes)
+    mc = bootstrap_monte_carlo(
+        closes, range_plan.lower_price, range_plan.upper_price,
+        horizon_bars=horizon_bars, paths=mc_paths
+    )
+
+    from dlmm_lp_engine import risk_engine, rebalance_engine
+    risk = risk_engine(metrics, range_plan, mc, fee_apr=fee_apr, horizon_days=max(1, horizon_bars // 24))
+    rebalance = rebalance_engine(metrics, range_plan, mc, regime)
+
+    return {
+        "price": metrics.price,
+        "regime": regime.value,
+        "math": {
+            "price": metrics.price,
+            "atr": metrics.atr,
+            "atr_pct": metrics.atr_pct,
+            "volatility": metrics.volatility,
+            "volatility_ratio": metrics.volatility_ratio,
+            "z_score": metrics.z_score,
+            "trend_strength": metrics.trend_strength,
+            "volume_pressure": metrics.volume_pressure,
+            "entropy": metrics.entropy,
+            "liquidity_force": metrics.liquidity_force,
+            "mean_reversion_force": metrics.mean_reversion_force,
+            "rvol": metrics.rvol,
+        },
+        "range": {
+            "lower": range_plan.lower_price,
+            "center": range_plan.center_price,
+            "upper": range_plan.upper_price,
+            "width_pct": range_plan.width_pct,
+            "multipliers": range_plan.multipliers,
+        },
+        "monte_carlo": {
+            "paths": mc.paths,
+            "horizon_bars": mc.horizon_bars,
+            "p_below": mc.p_below,
+            "p_above": mc.p_above,
+            "p_inside": max(0, 1 - mc.p_out_of_range),
+            "p_out_of_range": mc.p_out_of_range,
+            "expected_terminal_price": mc.expected_terminal_price,
+            "p05": mc.p05,
+            "p50": mc.p50,
+            "p95": mc.p95,
+        },
+        "risk": {
+            "score": risk.risk_score,
+            "out_of_range": risk.p_out_of_range,
+            "il_proxy": risk.il_proxy,
+            "fee_yield": risk.expected_fee_yield,
+            "fee_il_ratio": risk.fee_il_ratio,
+            "notes": risk.notes,
+        },
+        "rebalance": {
+            "rebalance": rebalance.rebalance,
+            "urgency": rebalance.urgency,
+            "reasons": rebalance.reasons,
+        },
+        "history": len(candles),
+        "bin": None,
+        "bin_note": "Active bin + bin step harus diambil dari metadata pool Meteora sebelum bin ID dihitung.",
+    }
