@@ -199,7 +199,7 @@ function renderReview(d,name){
  const px=v=>{const n=Number(v||0);return Number.isFinite(n)&&n>0?(n<0.001?n.toPrecision(6):n.toFixed(6)):'—'};
  const pct01=v=>pct(Number(v||0));
  const price=Number(d.price||0), lo=Number(r.lower||0), hi=Number(r.upper||0);
- const below=Number(mc?.p_below||0), inside=Number(mc?.p_inside||0), above=Number(mc?.p_above||0);
+ const below=Number(mc?.p_below||0), inside=Number(mc?.p_survive_range ?? mc?.p_inside ?? 0), above=Number(mc?.p_above||0);
  const escape=Number(mc?.p_ever_out_of_range ?? ri.out_of_range ?? 0);
  const balance=above-below;
  const direction=balance>0.12?'NAIK':balance<-0.12?'TURUN':'SEIMBANG';
@@ -217,10 +217,12 @@ function renderReview(d,name){
  const position=hi>lo?Math.max(0,Math.min(100,(price-lo)/(hi-lo)*100)):50;
  const fee=Number(a.lp_components?.fee_potential||0), rq=Number(a.lp_components?.range_quality_proxy||0), ds=Number(a.lp_components?.directional_safety||0);
  const volumeRatio=Number(lm.vol_liq||0);
+ const totalProb=Math.max(below+inside+above,0.000001);
+ const wBelow=below/totalProb, wInside=inside/totalProb, wAbove=above/totalProb;
  const outcome='<div style="display:flex;height:32px;border-radius:8px;overflow:hidden;background:#111a21;margin-top:10px">'+
-   '<div style="width:'+Math.max(2,below*100)+'%;background:#f06f7e55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">TURUN '+pct01(below)+'</div>'+
-   '<div style="width:'+Math.max(2,inside*100)+'%;background:#46d89a44;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">RANGE '+pct01(inside)+'</div>'+
-   '<div style="width:'+Math.max(2,above*100)+'%;background:#65b9ff55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">NAIK '+pct01(above)+'</div></div>';
+   '<div style="width:'+Math.max(2,wBelow*100)+'%;background:#f06f7e55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">AKHIR DI BAWAH '+pct01(below)+'</div>'+
+   '<div style="width:'+Math.max(2,wInside*100)+'%;background:#46d89a44;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">BERTAHAN '+pct01(inside)+'</div>'+
+   '<div style="width:'+Math.max(2,wAbove*100)+'%;background:#65b9ff55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">AKHIR DI ATAS '+pct01(above)+'</div></div>';
  const metric=(label,value,cls='')=>'<div style="background:#0f171e;border:1px solid #18242d;border-radius:8px;padding:10px"><div class="label">'+label+'</div><div class="value '+cls+'" style="font-size:18px">'+value+'</div></div>';
  const reason=(ok,title,body)=>'<div class="reason"><span class="dotmini '+(ok?'green':'red')+'"></span><b>'+title+'</b><br><span class="sub">'+body+'</span></div>';
 
