@@ -23,7 +23,7 @@ def pct(x):return float(x or 0)
 def score01(x):return clamp(float(x),0,1)
 def safe_div(a,b,d=0):return a/b if b else d
 
-FORMULA_ENGINE_VERSION = "POOL-INTEL-2"
+FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
 
 
 def fetch_seed_tokens():
