@@ -14,7 +14,7 @@ def gmgn_url(token):
 def gmgn_rows(limit=100):
     return []
 def get_json(url):
-    req=urllib.request.Request(url,headers={"User-Agent":UA,"Accept":"application/json"})
+    req=urllib.request.Request(url,headers={"User-Agent":UA,"Accept":"application/json;version=20230203"})
     with urllib.request.urlopen(req,timeout=TIMEOUT) as r:return json.loads(r.read().decode())
 
 def clamp(x,a,b):return max(a,min(b,x))
@@ -597,12 +597,42 @@ if __name__=="__main__":
 
 
 def fetch_ohlcv(pool_address, limit=200):
-    """Fetch public OHLCV history for review. GeckoTerminal uses DexScreener pair/pool addresses."""
-    base = "https://api.geckoterminal.com/api/v2/networks/solana/pools/"
-    endpoints = [
-        f"{base}{urllib.parse.quote(pool_address, safe='')}/ohlcv/minute?aggregate=5&limit={min(limit,1000)}",
-        f"{base}{urllib.parse.quote(pool_address, safe='')}/ohlcv/hour?aggregate=1&limit={min(limit,1000)}",
-    ]
+    """Fetch review candles from GeckoTerminal, resolving the pool address when needed."""
+    base = "https://api.geckoterminal.com/api/v2"
+    addresses = [str(pool_address).strip()]
+    errors = []
+
+    # DexScreener pairAddress is normally the DEX pool address. If GeckoTerminal
+    # does not recognize it directly, search its indexed pools and retry with
+    # the canonical pool address.
+    try:
+        pool_url = f"{base}/networks/solana/pools/{urllib.parse.quote(addresses[0], safe='')}"
+        data = get_json(pool_url)
+        addr = ((data.get("data") or {}).get("attributes") or {}).get("address")
+        if addr and addr not in addresses:
+            addresses.insert(0, addr)
+    except Exception as exc:
+        errors.append("pool lookup: " + str(exc))
+
+    try:
+        search_url = f"{base}/search/pools?query={urllib.parse.quote(addresses[0], safe='')}"
+        data = get_json(search_url)
+        for item in (data.get("data") or [])[:5]:
+            addr = ((item.get("attributes") or {}).get("address")
+                    or str(item.get("id") or "").split("_", 1)[-1])
+            if addr and addr not in addresses:
+                addresses.append(addr)
+    except Exception as exc:
+        errors.append("pool search: " + str(exc))
+
+    endpoints = []
+    for addr in addresses[:6]:
+        qaddr = urllib.parse.quote(addr, safe='')
+        endpoints.extend([
+            f"{base}/networks/solana/pools/{qaddr}/ohlcv/hour?aggregate=1&limit={min(limit,1000)}&currency=usd",
+            f"{base}/networks/solana/pools/{qaddr}/ohlcv/minute?aggregate=5&limit={min(limit,1000)}&currency=usd",
+        ])
+
     for url in endpoints:
         try:
             data = get_json(url)
@@ -622,9 +652,14 @@ def fetch_ohlcv(pool_address, limit=200):
                 })
             if len(candles) >= 8:
                 return list(reversed(candles))
-        except Exception:
-            pass
-    raise RuntimeError("Riwayat OHLCV tidak tersedia untuk pool ini.")
+            errors.append(f"short history: {len(candles)} candles")
+        except Exception as exc:
+            errors.append(str(exc))
+
+    raise RuntimeError(
+        "Riwayat OHLCV GeckoTerminal tidak tersedia untuk pool ini. "
+        + ("Detail: " + errors[-1] if errors else "")
+    )
 
 def review_pair(pool_address, fee_apr=0, horizon_bars=24, mc_paths=1500):
     from dlmm_lp_engine import Candle, math_engine, classify_regime, range_engine, bootstrap_monte_carlo
