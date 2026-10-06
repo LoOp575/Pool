@@ -1,0 +1,73 @@
+"""Pump-to-DLMM opportunity scanner. Stdlib only."""
+from __future__ import annotations
+import json, math, time, urllib.request, urllib.parse
+
+UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=8
+
+def get_json(url):
+    req=urllib.request.Request(url,headers={"User-Agent":UA,"Accept":"application/json"})
+    with urllib.request.urlopen(req,timeout=TIMEOUT) as r:return json.loads(r.read().decode())
+
+def clamp(x,a,b):return max(a,min(b,x))
+def pct(x):return float(x or 0)
+def score01(x):return clamp(float(x),0,1)
+def safe_div(a,b,d=0):return a/b if b else d
+
+def fetch_seed_tokens():
+    out={}
+    for path in ["/token-profiles/latest/v1","/token-boosts/latest/v1","/token-boosts/top/v1"]:
+        try:
+            data=get_json(DEX_URL+path)
+            for x in data if isinstance(data,list) else []:
+                if x.get("chainId")=="solana" and x.get("tokenAddress"):out[x["tokenAddress"]]=x
+        except Exception:pass
+    return list(out.values())
+
+def fetch_pairs(token):
+    try:return get_json(f"{DEX_URL}/token-pairs/v1/solana/{urllib.parse.quote(token,safe='')}") or []
+    except Exception:return []
+
+def continuation_score(price_change,volume,liquidity,txns,buys,sells,age_h,price_change_5m=0):
+    pump=score01((price_change-.12)/1.20)
+    vol=score01(math.log1p(max(volume,0))/math.log1p(5_000_000))
+    liq=score01(math.log1p(max(liquidity,0))/math.log1p(1_000_000))
+    activity=score01(math.log1p(max(txns,0))/math.log1p(10_000))
+    buy_ratio=safe_div(buys,buys+sells,.5); pressure=score01((buy_ratio-.35)/.30)
+    age=score01(1-math.exp(-max(age_h,0)/12))
+    cooldown=1 if price_change_5m<=.08 else score01(1-(price_change_5m-.08)/.20)
+    return 100*(.28*pump+.23*vol+.12*liq+.12*activity+.13*pressure+.07*age+.05*cooldown)
+
+def rank_pair(p):
+    ch=p.get("priceChange") or {}; vol=p.get("volume") or {}; tx=p.get("txns") or {}
+    h1=float(ch.get("h1") or 0); m5=float(ch.get("m5") or 0)
+    v1=float(vol.get("h1") or 0); liq=float((p.get("liquidity") or {}).get("usd") or 0)
+    t1=tx.get("h1") or {}; buys=int(t1.get("buys") or 0); sells=int(t1.get("sells") or 0)
+    created=p.get("pairCreatedAt") or int(time.time()*1000); age_h=max(0,(time.time()*1000-created)/3600000)
+    buy_ratio=safe_div(buys,buys+sells,.5); vol_liq=v1/max(liq,1)
+    s=continuation_score(h1,v1,liq,buys+sells,buys,sells,age_h,m5)
+    s-=clamp(max(0,m5-12)/35,0,1)*15
+    s-=clamp((25_000-liq)/25_000,0,1)*20
+    return clamp(s,0,100),{"price":float(p.get("priceUsd") or 0),"h1":h1,"m5":m5,
+      "h6":float(ch.get("h6") or 0),"h24":float(ch.get("h24") or 0),"v1":v1,
+      "v24":float(vol.get("h24") or 0),"liquidity":liq,"buy_ratio":buy_ratio,
+      "vol_liq":vol_liq,"age_h":age_h,"pair":p.get("pairAddress"),"dex":p.get("dexId"),
+      "url":p.get("url"),"base":p.get("baseToken",{}).get("symbol"),
+      "quote":p.get("quoteToken",{}).get("symbol"),"score":clamp(s,0,100),
+      "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"}}
+
+def scan(limit=40,only_meteora=False):
+    candidates=[]
+    for seed in fetch_seed_tokens():
+        for p in fetch_pairs(seed.get("tokenAddress")):
+            if p.get("chainId")!="solana":continue
+            score,row=rank_pair(p)
+            if row["h1"]<15 or row["v1"]<20_000 or row["liquidity"]<10_000:continue
+            if only_meteora and not row["meteora"]:continue
+            candidates.append(row)
+    rows=sorted({x["pair"]:x for x in candidates if x.get("pair")}.values(),key=lambda x:(x["meteora"],x["score"],x["v1"]),reverse=True)[:limit]
+    return {"generated_at":int(time.time()),"count":len(rows),"rows":rows,"source":"DexScreener discovery feed + pair data","filters":{"min_1h_pump":15,"min_1h_volume_usd":20000,"min_liquidity_usd":10000,"only_meteora":only_meteora}}
+
+if __name__=="__main__":
+ import argparse
+ ap=argparse.ArgumentParser();ap.add_argument("--limit",type=int,default=40);ap.add_argument("--meteora",action="store_true");a=ap.parse_args()
+ print(json.dumps(scan(a.limit,a.meteora),indent=2))
