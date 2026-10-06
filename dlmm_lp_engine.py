@@ -164,14 +164,20 @@ def liquidity_distribution(b,m,distribution,max_bins=201):
     return out
 
 def bootstrap_monte_carlo(closes,lower,upper,horizon_bars=24,paths=2000,seed=7):
-    rs=log_returns(closes); rng=random.Random(seed); terminals=[]; below=above=0
+    """Bootstrap future log-returns and measure true range survival."""
+    rs=log_returns(closes); rng=random.Random(seed); terminals=[]; below=above=out=0
     for _ in range(paths):
         p=closes[-1]; mn=mx=p
         for _ in range(horizon_bars):
             p*=math.exp(rng.choice(rs)); mn=min(mn,p); mx=max(mx,p)
-        terminals.append(p); below+=mn<lower; above+=mx>upper
+        terminals.append(p)
+        hit_below=mn<lower
+        hit_above=mx>upper
+        below += hit_below
+        above += hit_above
+        out += hit_below or hit_above
     terminals.sort(); n=len(terminals)
-    return MonteCarloResult(paths,horizon_bars,below/n,above/n,(below+above)/n,mean(terminals),
+    return MonteCarloResult(paths,horizon_bars,below/n,above/n,out/n,mean(terminals),
                             terminals[max(0,int(.05*n)-1)],terminals[max(0,int(.50*n)-1)],terminals[max(0,int(.95*n)-1)])
 
 def risk_engine(m,r,mc,fee_apr=0,horizon_days=1):
