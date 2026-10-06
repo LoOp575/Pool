@@ -641,17 +641,151 @@ def _live_analysis(p, strategy="balanced"):
     }, row
 
 
+def _final_intelligence(p, row, mc, range_plan, strategy="balanced"):
+    """Single decision layer for the LP objective.
+
+    Scanner scores discovery only. This layer combines the live market state,
+    Merton range-survival scenario, LP quality proxies, and safety gates into
+    one human-facing decision. No historical OHLCV or Meteora bin metadata is
+    invented here.
+    """
+    lm = row["live_metrics"]
+    lp = float(row["lp_score"])
+    fee = float(row["lp_components"].get("fee_potential", 0))
+    range_quality = float(row["lp_components"].get("range_quality_proxy", 0))
+    directional_safety = float(row["lp_components"].get("directional_safety", 0))
+    inside = float(mc.get("p_inside", 0)) if mc else 0.0
+    escape = float(mc.get("p_ever_out_of_range", mc.get("p_out_of_range", 1))) if mc else 1.0
+    below = float(mc.get("p_below", 0)) if mc else 0.0
+    above = float(mc.get("p_above", 0)) if mc else 0.0
+
+    reasons = []
+    warnings = []
+    hard_wait = []
+
+    if lp < 50:
+        hard_wait.append("kualitas LP belum cukup")
+    if escape >= 0.35:
+        hard_wait.append("range terlalu mudah ditembus")
+    if inside < 0.55:
+        hard_wait.append("peluang bertahan di range rendah")
+    if directional_safety < 40:
+        hard_wait.append("gerakan terlalu satu arah")
+
+    if fee >= 70:
+        reasons.append("aktivitas volume mendukung peluang fee")
+    if inside >= 0.65:
+        reasons.append("sebagian besar simulasi bertahan di range")
+    elif inside >= 0.55:
+        reasons.append("peluang bertahan di range masih layak")
+    if directional_safety >= 70:
+        reasons.append("tekanan arah relatif aman")
+    if abs(above - below) < 0.12:
+        reasons.append("gerakan dua arah lebih cocok untuk LP")
+    if range_quality >= 70:
+        reasons.append("kualitas range mendukung fee capture")
+
+    h1 = float(lm.get("h1", 0))
+    h6 = float(lm.get("h6", 0))
+    h24 = float(lm.get("h24", 0))
+    if abs(h1) >= 20 or abs(h6) >= 50:
+        warnings.append("momentum sedang agresif")
+    if float(lm.get("volume_acceleration", 0)) >= 3:
+        warnings.append("volume sedang berakselerasi")
+    if float(lm.get("buy_ratio", 0.5)) >= 0.68 or float(lm.get("buy_ratio", 0.5)) <= 0.32:
+        warnings.append("arus buyer/seller terlalu berat sebelah")
+    if escape >= 0.25:
+        warnings.append("probabilitas range keluar mulai tinggi")
+
+    # The decision score is deliberately gated by survival. A high-fee,
+    # high-volatility pool must not win merely because it is active.
+    survival = clamp(100 * inside, 0, 100)
+    risk_safety = 100 * (1 - escape)
+    final_score = clamp(
+        0.28 * lp +
+        0.20 * fee +
+        0.18 * range_quality +
+        0.18 * survival +
+        0.16 * directional_safety,
+        0, 100
+    )
+
+    if hard_wait:
+        decision = "TUNGGU"
+        action_reason = " / ".join(hard_wait[:2])
+    elif escape >= 0.30 or float(row["risk"]["score"]) >= 60:
+        decision = "REBALANCE"
+        action_reason = "risiko range sudah meningkat"
+    elif final_score >= 70 and escape < 0.25 and inside >= 0.55:
+        decision = "MASUK"
+        action_reason = "fee opportunity cukup kuat dengan range yang masih bertahan"
+    else:
+        decision = "TUNGGU"
+        action_reason = "belum ada keunggulan yang cukup kuat"
+
+    # Rebalance has priority only when a position is assumed to already exist.
+    # For a fresh candidate, the same condition is presented as WAIT rather
+    # than pretending an LP position is currently open.
+    if decision == "REBALANCE" and not row.get("position_active", False):
+        decision = "TUNGGU"
+        action_reason = "range berisiko; jangan buka posisi baru sekarang"
+
+    regime = (
+        "EXTREME" if escape >= 0.35 or abs(h1) >= 25 else
+        "TRENDING" if abs(h1) >= 8 or abs(h6) >= 20 else
+        "CHOPPY" if abs(h1) <= 3 and abs(h6) <= 10 else
+        "NORMAL"
+    )
+
+    return {
+        "decision": decision,
+        "score": round(final_score, 2),
+        "regime": regime,
+        "action_reason": action_reason,
+        "reasons": reasons[:5],
+        "warnings": warnings[:5],
+        "gates": {
+            "lp_score": round(lp, 2),
+            "fee_opportunity": round(fee, 2),
+            "range_quality": round(range_quality, 2),
+            "directional_safety": round(directional_safety, 2),
+            "inside_probability": round(inside, 4),
+            "out_of_range_probability": round(escape, 4),
+            "risk_safety": round(risk_safety, 2),
+        },
+        "range": range_plan,
+        "probability": {
+            "below": below,
+            "inside": inside,
+            "above": above,
+            "ever_out_of_range": escape,
+            "p05": mc.get("p05") if mc else None,
+            "p50": mc.get("p50") if mc else None,
+            "p95": mc.get("p95") if mc else None,
+        },
+        "data_quality": {
+            "source": "DexScreener live snapshot",
+            "historical_candles": 0,
+            "confidence": "LOW",
+            "real_ohlcv_available": False,
+            "meteora_bin_metadata_available": False,
+            "fee_is_actual": False,
+        },
+        "strategy": str(strategy).upper(),
+    }
+
+
 def _live_review(pair, horizon_bars=96, mc_paths=2000):
-    p=dex_pair(pair)
-    analysis,row=_live_analysis(p)
-    mc=None
-    mc_error=None
+    """Run the complete live Pool Intelligence pipeline."""
+    p = dex_pair(pair)
+    analysis, row = _live_analysis(p)
     ch = p.get("priceChange") or {}
     vol = p.get("volume") or {}
     tx = p.get("txns") or {}
     liq = float((p.get("liquidity") or {}).get("usd") or 0)
     price = float(p.get("priceUsd") or 0)
     h1 = float(ch.get("h1") or 0)
+    m5 = float(ch.get("m5") or 0)
     h6 = float(ch.get("h6") or 0)
     h24 = float(ch.get("h24") or 0)
     v1 = float(vol.get("h1") or 0)
@@ -669,124 +803,111 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
         0.45 * score01(vol_liq / 0.03), 0, 1
     )
 
+    range_plan = _live_range(price, h1, h6, h24)
+    mc = None
+    mc_error = None
+    try:
+        mc = snapshot_monte_carlo(
+            price, m5, h1, h6, h24, v1, v24, liq, buys, sells, total_tx,
+            range_plan["lower"], range_plan["upper"],
+            max(1, int(horizon_bars)), max(200, int(mc_paths))
+        )
+    except Exception as exc:
+        mc_error = str(exc)
+
+    # Keep the legacy risk fields for UI compatibility, but derive them from
+    # the same Monte Carlo result used by Final Intelligence.
+    mc_out = (
+        float(mc.get("p_ever_out_of_range", mc.get("p_out_of_range", 1)))
+        if mc else 1.0
+    )
+    liquidity_quality = score01(math.log1p(max(liq, 0)) / math.log1p(2_000_000))
     directional = clamp(
         0.42 * abs(h1) / 40 +
         0.28 * abs(h6) / 80 +
         0.20 * abs(h24) / 150 +
         0.10 * abs(buy_ratio - 0.5) / 0.5, 0, 1
     )
-    activity = score01(math.log1p(total_tx) / math.log1p(1000))
-    liquidity_quality = score01(math.log1p(max(liq, 0)) / math.log1p(2_000_000))
-    fee_potential = score01(
-        0.70 * math.log1p(max(vol_liq, 0)) / math.log1p(20) +
-        0.30 * math.log1p(max(volume_24_liq, 0)) / math.log1p(60)
-    )
     risk_score = clamp(100 * (
-        0.48 * directional +
+        0.48 * mc_out +
         0.22 * (1 - liquidity_quality) +
         0.18 * score01(abs(h1) / 40) +
         0.12 * abs(buy_ratio - 0.5) / 0.5
     ), 0, 100)
 
-    if abs(h1) >= 20 or abs(h6) >= 50:
-        regime = "HIGH_VOLATILITY"
-    elif abs(h1) >= 8 or abs(h6) >= 20:
-        regime = "MOMENTUM"
-    elif abs(h1) <= 3 and abs(h6) <= 10:
-        regime = "QUIET"
-    else:
-        regime = "NORMAL"
+    row["live_metrics"] = {
+        "h1": h1, "h6": h6, "h24": h24, "m5": m5,
+        "v1": v1, "v24": v24, "liquidity": liq,
+        "buy_ratio": buy_ratio, "transactions_1h": total_tx,
+        "vol_liq": vol_liq, "volume_24_liq": volume_24_liq,
+        "volume_acceleration": volume_acceleration,
+        "volume_persistence": volume_persistence,
+        "price_usd": price, "buys_1h": buys, "sells_1h": sells,
+        "buy_pressure": round((buy_ratio - 0.5) * 2, 4),
+    }
+    row["risk"] = {"score": risk_score, "out_of_range": mc_out}
 
-    range_plan = _live_range(price, h1, h6, h24)
-    try:
-        mc=snapshot_monte_carlo(price,float(ch.get("m5") or 0),h1,h6,h24,
-                                v1,v24,liq,buys,sells,total_tx,
-                                range_plan["lower"],range_plan["upper"],
-                                max(1, int(horizon_bars)), max(200, int(mc_paths)))
-    except Exception as exc:
-        mc_error=str(exc)
-    mc_out = float(mc.get("p_ever_out_of_range", mc.get("p_out_of_range", 0))) if mc else None
-    out_proxy = mc_out if mc_out is not None else clamp(
-        0.45 * abs(h1) / 100 +
-        0.35 * abs(h6) / 100 +
-        0.20 * abs(h24) / 100, 0, 0.95
+    intelligence = _final_intelligence(
+        p, row, mc, range_plan, strategy=row.get("lp_strategy", "BALANCED")
     )
-    rebalance = out_proxy >= 0.30 or risk_score >= 60
-    urgency = "HIGH" if out_proxy >= 0.50 or risk_score >= 75 else "MEDIUM" if rebalance else "NONE"
+
+    # Final action for a fresh candidate can only be MASUK or TUNGGU.
+    # REBALANCE is exposed when the caller supplies an active position later.
+    rebalance_reasons = []
+    if mc_out >= 0.30:
+        rebalance_reasons.append("P(out-of-range) tinggi")
+    if risk_score >= 60:
+        rebalance_reasons.append("risiko pasar tinggi")
+    if abs(buy_ratio - 0.5) >= 0.25 and abs(h1) >= 8:
+        rebalance_reasons.append("tekanan arah kuat")
+    rebalance = bool(rebalance_reasons)
 
     return {
         "price": price,
         "formula_engine": FORMULA_ENGINE_VERSION,
-        "regime": regime,
+        "regime": intelligence["regime"],
         "analysis": analysis,
+        "intelligence": intelligence,
+        "decision": intelligence["decision"],
         "confidence": "LOW · LIVE SNAPSHOT" if mc else "LIVE",
         "data_source": "DexScreener",
         "pair": p.get("pairAddress"),
         "token": (p.get("baseToken") or {}).get("address"),
         "dex": p.get("dexId"),
         "math": {
-            "price": price,
-            "atr": None,
-            "atr_pct": None,
-            "volatility": None,
-            "volatility_ratio": None,
-            "z_score": None,
-            "trend_strength": None,
-            "volume_pressure": round((buy_ratio - 0.5) * 2, 4),
-            "entropy": None,
-            "liquidity_force": None,
-            "mean_reversion_force": None,
-            "rvol": None,
+            "price": price, "atr": None, "atr_pct": None,
+            "volatility": None, "volatility_ratio": None, "z_score": None,
+            "trend_strength": None, "volume_pressure": round((buy_ratio - 0.5) * 2, 4),
+            "entropy": None, "liquidity_force": None,
+            "mean_reversion_force": None, "rvol": None,
         },
-        "live_metrics": {
-            "h1": h1, "h6": h6, "h24": h24,
-            "v1": v1, "v24": v24,
-            "liquidity": liq,
-            "buy_ratio": buy_ratio,
-            "transactions_1h": total_tx,
-            "vol_liq": vol_liq,
-            "volume_24_liq": volume_24_liq,
-            "volume_acceleration": volume_acceleration,
-            "volume_persistence": volume_persistence,
-            "price_usd": price,
-            "buys_1h": buys,
-            "sells_1h": sells,
-            "buy_pressure": round((buy_ratio - 0.5) * 2, 4),
-        },
+        "live_metrics": row["live_metrics"],
         "range": range_plan,
         "monte_carlo": mc,
         "monte_carlo_status": "ACTIVE" if mc else "UNAVAILABLE",
         "monte_carlo_error": mc_error,
         "risk": {
             "score": risk_score,
-            "out_of_range": out_proxy,
-            "out_of_range_source": "MERTON_P_EVER_OUT_OF_RANGE" if mc else "LIVE_MOVEMENT_PROXY",
-            "il_proxy": None,
-            "fee_yield": None,
-            "fee_il_ratio": None,
+            "out_of_range": mc_out,
+            "out_of_range_source": "MERTON_P_EVER_OUT_OF_RANGE" if mc else "UNAVAILABLE",
+            "il_proxy": None, "fee_yield": None, "fee_il_ratio": None,
             "notes": [
-                "Risk memakai data live DexScreener.",
-                "Historical volatility belum tersedia dari DexScreener.",
-                "Monte Carlo memakai Merton jump-diffusion pada state live, bukan OHLCV historis.",
-                "Parameter Merton dikalibrasi heuristik dari state live; confidence LOW.",
+                "Risk, range, and decision use the same live snapshot state.",
+                "Historical OHLCV belum tersedia; ATR/Z-score/entropy asli tidak diisi.",
+                "Monte Carlo memakai Merton jump-diffusion dengan kalibrasi state live.",
+                "Fee opportunity adalah proxy turnover, bukan fee APR aktual.",
             ],
         },
         "rebalance": {
             "rebalance": rebalance,
-            "urgency": urgency,
-            "reasons": (
-                ["range live proxy terlalu tertekan"]
-                if out_proxy >= 0.30 else
-                ["directional pressure tinggi"]
-                if risk_score >= 60 else
-                []
-            ),
+            "urgency": "HIGH" if mc_out >= 0.50 or risk_score >= 75 else "MEDIUM" if rebalance else "NONE",
+            "reasons": rebalance_reasons,
         },
-        "history": int(mc.get("historical_candles",0)) if mc else 0,
+        "history": 0,
         "history_status": "NO_REAL_HISTORY",
-        "model_status": "SNAPSHOT_SCENARIO" if mc else "LIVE_ONLY",
+        "model_status": "FINAL_INTELLIGENCE_SNAPSHOT" if mc else "LIVE_ONLY",
         "bin": None,
-        "bin_note": "Active bin + bin step harus diambil dari metadata pool Meteora sebelum bin ID dihitung.",
+        "bin_note": "Bin Meteora belum dihitung tanpa active bin + bin step metadata pool.",
     }
 
 
