@@ -38,7 +38,7 @@ class TestFinalIntelligence(unittest.TestCase):
         row = self.base_row()
         mc = {
             "p_below": 0.10, "p_inside": 0.70, "p_above": 0.20,
-            "p_ever_out_of_range": 0.18,
+            "p_ever_out_of_range": 0.18, "p_survive_range": 0.82,
             "p05": 0.9, "p50": 1.02, "p95": 1.16,
         }
         r = {"lower": 0.8, "center": 1.0, "upper": 1.25, "width_pct": .25}
@@ -50,7 +50,7 @@ class TestFinalIntelligence(unittest.TestCase):
         row = self.base_row()
         mc = {
             "p_below": 0.20, "p_inside": 0.45, "p_above": 0.35,
-            "p_ever_out_of_range": 0.62,
+            "p_ever_out_of_range": 0.62, "p_survive_range": 0.38,
             "p05": 0.5, "p50": 0.9, "p95": 1.5,
         }
         r = {"lower": 0.8, "center": 1.0, "upper": 1.25, "width_pct": .25}
