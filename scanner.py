@@ -334,20 +334,32 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """DexScreener-only meme discovery. No intelligence or LP math."""
+    """DexScreener-only discovery. Search and public token feeds are combined."""
     pairs = {}
-    diag = {"search_queries_total": 0, "search_queries_ok": 0,
-            "search_pairs_raw": 0, "solana_pairs": 0,
-            "fallback_tokens": 0, "fallback_pairs": 0, "errors": []}
+    diag = {
+        "search_queries_total": 0,
+        "search_queries_ok": 0,
+        "search_pairs_raw": 0,
+        "feed_tokens": 0,
+        "expanded_tokens": 0,
+        "expanded_pairs": 0,
+        "solana_pairs": 0,
+        "errors": [],
+    }
 
     def error(stage, exc):
         if len(diag["errors"]) < 12:
             diag["errors"].append({"stage": stage, "error": str(exc)[:180]})
 
     def add_pair(p):
-        if isinstance(p, dict) and p.get("chainId") == "solana" and p.get("pairAddress"):
+        if (
+            isinstance(p, dict)
+            and p.get("chainId") == "solana"
+            and p.get("pairAddress")
+        ):
             pairs[p["pairAddress"]] = p
 
+    # 1) Direct search discovery.
     def search(q):
         try:
             return q, get_json(
@@ -359,10 +371,11 @@ def fetch_search_pairs():
 
     queries = ["meme", "pump", "pepe", "bonk", "doge", "wif", "cat", "inu"]
     diag["search_queries_total"] = len(queries)
+
     with ThreadPoolExecutor(max_workers=8) as pool:
         for q, data in pool.map(search, queries):
             if isinstance(data, Exception):
-                error("search:"+q, data)
+                error("search:" + q, data)
                 continue
             diag["search_queries_ok"] += 1
             raw = data.get("pairs") or [] if isinstance(data, dict) else []
@@ -370,43 +383,49 @@ def fetch_search_pairs():
             for p in raw:
                 add_pair(p)
 
-    if not pairs:
-        tokens = set()
-        for path in ("/token-profiles/latest/v1",
-                     "/token-boosts/latest/v1",
-                     "/token-boosts/top/v1"):
-            try:
-                data = get_json(DEX_URL + path)
-                for item in data if isinstance(data, list) else []:
-                    if item.get("chainId") == "solana" and item.get("tokenAddress"):
-                        tokens.add(str(item["tokenAddress"]))
-            except Exception as exc:
-                error("fallback:"+path, exc)
+    # 2) Always add current DexScreener public feeds.
+    # Do not wait for search to be empty. Search results can be valid while
+    # still missing the recent Solana launches we actually want.
+    tokens = set()
+    for path in (
+        "/token-profiles/latest/v1",
+        "/token-boosts/latest/v1",
+        "/token-boosts/top/v1",
+    ):
+        try:
+            data = get_json(DEX_URL + path)
+            for item in data if isinstance(data, list) else []:
+                if item.get("chainId") == "solana" and item.get("tokenAddress"):
+                    tokens.add(str(item["tokenAddress"]))
+        except Exception as exc:
+            error("feed:" + path, exc)
 
-        tokens = list(tokens)[:24]
-        diag["fallback_tokens"] = len(tokens)
+    # Keep the request bounded for serverless execution.
+    tokens = list(tokens)[:32]
+    diag["feed_tokens"] = len(tokens)
 
-        def expand(token):
-            try:
-                return token, get_json(
-                    DEX_URL + "/token-pairs/v1/solana/" +
-                    urllib.parse.quote(token, safe="")
-                )
-            except Exception as exc:
-                return token, exc
+    def expand(token):
+        try:
+            return token, get_json(
+                DEX_URL + "/token-pairs/v1/solana/" +
+                urllib.parse.quote(token, safe="")
+            )
+        except Exception as exc:
+            return token, exc
 
+    if tokens:
         with ThreadPoolExecutor(max_workers=8) as pool:
             for token, data in pool.map(expand, tokens):
+                diag["expanded_tokens"] += 1
                 if isinstance(data, Exception):
-                    error("pair:"+token, data)
+                    error("pair:" + token, data)
                     continue
                 for p in data if isinstance(data, list) else []:
-                    diag["fallback_pairs"] += 1
+                    diag["expanded_pairs"] += 1
                     add_pair(p)
 
     diag["solana_pairs"] = len(pairs)
     return list(pairs.values()), diag
-
 
 def _poisson_sample(rng, lam):
     """Exact Poisson sampler for the Merton jump-count process."""
