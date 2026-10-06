@@ -23,7 +23,10 @@ class handler(BaseHTTPRequestHandler):
                 q = parse_qs(urlparse(self.path).query)
                 limit = min(max(int(q.get("limit", ["40"])[0]), 1), 100)
                 meteora = q.get("meteora", ["0"])[0] == "1"
-                self._send_json(200, scan(limit, meteora))
+                strategy = q.get("strategy", ["balanced"])[0].lower()
+                if strategy not in {"conservative","balanced","aggressive"}:
+                    strategy = "balanced"
+                self._send_json(200, scan(limit, meteora, strategy))
             except Exception as exc:
                 self._send_json(502, {"error": str(exc)})
             return
