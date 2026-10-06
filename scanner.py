@@ -383,49 +383,195 @@ def fetch_search_pairs():
 
 
 
+def _poisson_sample(rng, lam):
+    """Exact Poisson sampler for the Merton jump-count process."""
+    lam = max(0.0, float(lam))
+    if lam == 0.0:
+        return 0
+    if lam < 30.0:
+        limit = math.exp(-lam)
+        k = 0
+        p = 1.0
+        while p > limit:
+            k += 1
+            p *= rng.random()
+        return k - 1
+    # Stable normal approximation for very large Poisson means.
+    return max(0, int(round(rng.gauss(lam, math.sqrt(lam)))))
+
+
 def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidity,
                           buys, sells, transactions, lower, upper, horizon_bars=96, paths=2000):
-    """DexScreener-only factor Monte Carlo. Uses live market state, not candles."""
-    if price <= 0: raise ValueError("Harga live tidak valid.")
-    total=max(1,int(buys)+int(sells))
-    buy_ratio=clamp(safe_div(buys,total,0.5),0,1)
-    buy_pressure=(buy_ratio-0.5)*2.0
-    volume_liq=safe_div(float(volume_1h or 0),max(float(liquidity or 0),1),0)
-    volume_force=score01(math.log1p(max(volume_liq,0))/math.log1p(20))
-    activity_force=score01(math.log1p(max(int(transactions),0))/math.log1p(1000))
-    liquidity_force=1-score01(math.log1p(max(float(liquidity or 0),0))/math.log1p(2_000_000))
-    momentum=clamp(0.40*math.tanh(float(m5 or 0)/8.0)+0.30*math.tanh(float(h1 or 0)/25.0)+
-                    0.20*math.tanh(float(h6 or 0)/60.0)+0.10*math.tanh(float(h24 or 0)/180.0),-1,1)
-    directional_pressure=clamp(0.58*buy_pressure+0.42*momentum,-1,1)
-    base_step=0.003+0.010*volume_force+0.006*activity_force+0.012*liquidity_force
-    sigma=clamp(base_step+0.006*abs(momentum),0.003,0.045)
-    jump_risk=clamp(0.010*volume_force+0.012*liquidity_force+0.008*abs(directional_pressure),0,0.035)
-    mu=clamp(0.0045*directional_pressure+0.0015*buy_pressure*volume_force,-0.008,0.008)
-    rng=random.Random(); terminals=[]; below=above=0
-    for _ in range(max(1,int(paths))):
-        px=price
-        for _bar in range(max(1,int(horizon_bars))):
-            shock=rng.gauss(0,sigma)
-            if rng.random()<jump_risk:
-                shock+=rng.gauss(directional_pressure*0.012,0.018+0.020*liquidity_force)
-            px*=math.exp(mu+shock)
+    """
+    Merton (1976) jump-diffusion Monte Carlo driven by the live DexScreener state.
+
+    The stochastic process is the original Merton structure:
+        dS/S = (mu - lambda*k)dt + sigma*dW + (Y - 1)dN
+        Y = exp(N(mu_J, sigma_J^2))
+        k = E[Y - 1] = exp(mu_J + sigma_J^2/2) - 1
+        N ~ Poisson(lambda*dt)
+
+    We estimate the model parameters from the current snapshot because this
+    repository intentionally has no synthetic/historical candles. The
+    parameter-estimation layer is Pool-specific; the Merton simulation itself
+    follows the standard jump-diffusion equation.
+    """
+    if price <= 0:
+        raise ValueError("Harga live tidak valid.")
+
+    total = max(1, int(buys) + int(sells))
+    buy_ratio = clamp(safe_div(buys, total, 0.5), 0, 1)
+    buy_pressure = (buy_ratio - 0.5) * 2.0
+
+    volume_liq = safe_div(float(volume_1h or 0), max(float(liquidity or 0), 1), 0)
+    volume_force = score01(math.log1p(max(volume_liq, 0)) / math.log1p(20))
+    activity_force = score01(math.log1p(max(int(transactions), 0)) / math.log1p(1000))
+
+    # Thin liquidity increases jump intensity and jump dispersion.
+    liquidity_force = 1 - score01(
+        math.log1p(max(float(liquidity or 0), 0)) / math.log1p(2_000_000)
+    )
+
+    momentum = clamp(
+        0.40 * math.tanh(float(m5 or 0) / 8.0) +
+        0.30 * math.tanh(float(h1 or 0) / 25.0) +
+        0.20 * math.tanh(float(h6 or 0) / 60.0) +
+        0.10 * math.tanh(float(h24 or 0) / 180.0),
+        -1, 1
+    )
+    directional_pressure = clamp(
+        0.58 * buy_pressure + 0.42 * momentum, -1, 1
+    )
+
+    # Pool-specific calibration layer: current state -> Merton parameters.
+    # These are annualized parameters required by the continuous-time model.
+    dt = 15.0 / (365.0 * 24.0 * 60.0)
+    steps_per_year = 1.0 / dt
+
+    sigma_step = clamp(
+        0.003 +
+        0.010 * volume_force +
+        0.006 * activity_force +
+        0.012 * liquidity_force +
+        0.006 * abs(momentum),
+        0.003, 0.045
+    )
+    sigma = sigma_step * math.sqrt(steps_per_year)
+
+    # Physical-measure drift estimate. Merton's compensator below removes the
+    # expected jump contribution, so mu remains the total expected drift.
+    mu_step = clamp(
+        0.0045 * directional_pressure +
+        0.0015 * buy_pressure * volume_force,
+        -0.008, 0.008
+    )
+    mu = mu_step * steps_per_year
+
+    # Merton jump parameters: Poisson intensity and lognormal jump size.
+    # The state layer only estimates them; the simulation uses the exact
+    # Poisson/lognormal structure from the model.
+    jump_prob_step = clamp(
+        0.010 * volume_force +
+        0.012 * liquidity_force +
+        0.008 * abs(directional_pressure),
+        0, 0.035
+    )
+    lambda_year = -math.log(max(1e-12, 1.0 - jump_prob_step)) * steps_per_year
+    mu_j = clamp(0.012 * directional_pressure, -0.06, 0.06)
+    sigma_j = clamp(0.018 + 0.020 * liquidity_force, 0.018, 0.05)
+    kappa = math.exp(mu_j + 0.5 * sigma_j * sigma_j) - 1.0
+
+    rng = random.Random()
+    terminals = []
+    below = above = 0
+    first_escape_bars = []
+
+    for _ in range(max(1, int(paths))):
+        px = price
+        escaped = None
+        for bar in range(max(1, int(horizon_bars))):
+            # Standard Merton discretization:
+            # S(t+dt) = S(t) * exp((mu-lambda*kappa-0.5*sigma^2)dt
+            #                         + sigma*sqrt(dt)*Z) * product(Y_i)
+            n_jumps = _poisson_sample(rng, lambda_year * dt)
+            z = rng.gauss(0.0, 1.0)
+            log_return = (
+                (mu - lambda_year * kappa - 0.5 * sigma * sigma) * dt
+                + sigma * math.sqrt(dt) * z
+            )
+            if n_jumps:
+                for _jump in range(n_jumps):
+                    log_return += rng.gauss(mu_j, sigma_j)
+            px *= math.exp(log_return)
+
+            if escaped is None and (px < lower or px > upper):
+                escaped = bar + 1
+
         terminals.append(px)
-        if px<lower: below+=1
-        elif px>upper: above+=1
-    terminals.sort(); n=len(terminals)
-    q=lambda p: terminals[min(n-1,max(0,int(round((n-1)*p))))]
-    p_below=below/n; p_above=above/n
-    return {"paths":n,"horizon_bars":int(horizon_bars),"horizon_minutes":int(horizon_bars)*15,
-            "p_below":p_below,"p_inside":max(0,1-p_below-p_above),"p_above":p_above,
-            "p_out_of_range":p_below+p_above,"expected_terminal_price":sum(terminals)/n,
-            "p05":q(.05),"p50":q(.50),"p95":q(.95),"current_price":price,
-            "historical_candles":0,"historical_source":"DexScreener live snapshot",
-            "model":"factor-state Monte Carlo","confidence":"LOW",
-            "inputs":{"m5_pct":float(m5 or 0),"h1_pct":float(h1 or 0),"h6_pct":float(h6 or 0),"h24_pct":float(h24 or 0),
-                      "buy_ratio":buy_ratio,"buy_pressure":buy_pressure,"volume_force":volume_force,
-                      "activity_force":activity_force,"liquidity_force":liquidity_force,"momentum":momentum,
-                      "directional_pressure":directional_pressure,"drift_per_step":mu,"volatility_per_step":sigma,
-                      "jump_risk":jump_risk},"range":{"lower":lower,"upper":upper}}
+        if px < lower:
+            below += 1
+        elif px > upper:
+            above += 1
+        if escaped is not None:
+            first_escape_bars.append(escaped)
+
+    terminals.sort()
+    n = len(terminals)
+    q = lambda p: terminals[min(n - 1, max(0, int(round((n - 1) * p))))]
+
+    p_below = below / n
+    p_above = above / n
+    result = {
+        "paths": n,
+        "horizon_bars": int(horizon_bars),
+        "horizon_minutes": int(horizon_bars) * 15,
+        "p_below": p_below,
+        "p_inside": max(0, 1 - p_below - p_above),
+        "p_above": p_above,
+        "p_out_of_range": p_below + p_above,
+        "expected_terminal_price": sum(terminals) / n,
+        "p05": q(0.05),
+        "p50": q(0.50),
+        "p95": q(0.95),
+        "current_price": price,
+        "historical_candles": 0,
+        "historical_source": "DexScreener live snapshot",
+        "model": "Merton 1976 jump-diffusion Monte Carlo",
+        "model_equation": "dS/S=(mu-lambda*kappa)dt+sigma*dW+(Y-1)dN",
+        "confidence": "LOW",
+        "inputs": {
+            "m5_pct": float(m5 or 0),
+            "h1_pct": float(h1 or 0),
+            "h6_pct": float(h6 or 0),
+            "h24_pct": float(h24 or 0),
+            "buy_ratio": buy_ratio,
+            "buy_pressure": buy_pressure,
+            "volume_force": volume_force,
+            "activity_force": activity_force,
+            "liquidity_force": liquidity_force,
+            "momentum": momentum,
+            "directional_pressure": directional_pressure,
+            "dt_years": dt,
+            "drift_annualized": mu,
+            "volatility_annualized": sigma,
+            "jump_intensity_annualized": lambda_year,
+            "jump_mean_log": mu_j,
+            "jump_volatility_log": sigma_j,
+            "jump_expected_multiplier_minus_one": kappa,
+            "jump_probability_per_step": jump_prob_step,
+            "drift_compensator_annualized": lambda_year * kappa,
+            "calibration": "Pool snapshot state -> Merton parameters"
+        },
+        "range": {"lower": lower, "upper": upper},
+    }
+    if first_escape_bars:
+        result["mean_first_escape_bars"] = sum(first_escape_bars) / len(first_escape_bars)
+        result["p_ever_out_of_range"] = len(first_escape_bars) / n
+    else:
+        result["mean_first_escape_bars"] = None
+        result["p_ever_out_of_range"] = 0.0
+    return result
+
 def dex_pair(pair_address):
     """Fetch one live Solana pair directly from DexScreener."""
     url = f"{DEX_URL}/latest/dex/pairs/solana/{urllib.parse.quote(str(pair_address), safe='')}"
