@@ -791,38 +791,52 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 
 
 def scan(limit=40, only_meteora=False, strategy="balanced"):
-    """DexScreener fresh-meme scanner: young + active + ignition."""
+    """DexScreener discovery scanner: broad candidate radar, LP scoring happens in Review."""
     candidates=[]
     funnel={"discovered":0,"meme_score":0,"liquidity":0,"age_1_7d":0,"fallback_mode":False,
             "active_volume":0,"history_checked":0,"history_available":0,
             "pump_30pct":0,"volume_persistence":0,"not_faded":0,
             "fallback_24h":0,"final_before_dedupe":0,"final":0,
             "fresh_qualified":0,"ignition":0,"not_runaway":0}
+
     discovered=fetch_search_pairs()
     funnel["discovered"]=len(discovered)
 
+    # Stage 1: strict candidates. Keep this useful for ranking, but do not make
+    # it the only source of rows shown to the user.
     for p in discovered:
         try:
             meme_score,_=memecoin_score(p)
-            if meme_score < 20: continue
+            if meme_score < 20:
+                continue
             funnel["meme_score"] += 1
 
             _,row=rank_pair(p,strategy)
-            if row["liquidity"] < 1000: continue
+            if row["liquidity"] < 1000:
+                continue
             funnel["liquidity"] += 1
 
-            age_h=row["age_h"]; h1=row["h1"]; h6=row["h6"]; h24=row["h24"]
-            v1=row["v1"]; v24=row["v24"]; liq=row["liquidity"]
-            if not 0.5 <= age_h <= 168: continue
+            age_h=row["age_h"]
+            h1=row["h1"]
+            h6=row["h6"]
+            h24=row["h24"]
+            v1=row["v1"]
+            v24=row["v24"]
+            liq=row["liquidity"]
+
+            if not 0.5 <= age_h <= 168:
+                continue
             funnel["age_1_7d"] += 1
 
-            active=(v1 >= max(750,liq*0.015) or v24 >= max(5000,liq*0.08))
-            if not active: continue
+            active=(v1 >= max(750,liq*0.015) or
+                    v24 >= max(5000,liq*0.08))
+            if not active:
+                continue
             funnel["active_volume"] += 1
 
-            if h24 >= 30: funnel["pump_30pct"] += 1
+            if h24 >= 30:
+                funnel["pump_30pct"] += 1
 
-            # Recent-volume acceleration proxy from DexScreener's 1h vs 24h volume.
             volume_accel=safe_div(v1,max(v24/24,1),0)
             row["volume_acceleration"]=round(volume_accel,3)
 
@@ -831,11 +845,14 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 (h6 >= 8 and h24 >= 15 and v1 >= max(500,liq*0.01)) or
                 (h24 >= 30 and v1 >= max(1500,liq*0.03))
             )
-            if ignition: funnel["ignition"] += 1
+            if ignition:
+                funnel["ignition"] += 1
 
             not_runaway=not (h1 >= 70 and h24 >= 250)
-            if not_runaway: funnel["not_runaway"] += 1
-            if not not_runaway: continue
+            if not_runaway:
+                funnel["not_runaway"] += 1
+            if not not_runaway:
+                continue
 
             persistence=clamp(
                 0.55*score01(v24/max(liq*0.15,1))+
@@ -845,60 +862,95 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 funnel["volume_persistence"] += 1
                 funnel["not_faded"] += 1
 
-            if row["fresh_score"] < 32: continue
+            if row["fresh_score"] < 32:
+                continue
             funnel["fresh_qualified"] += 1
 
-            if only_meteora and not row["meteora"]: continue
+            if only_meteora and not row["meteora"]:
+                continue
 
+            row["scan_tier"]="STRICT"
             row["source"]="DexScreener"
             row["history_available"]=False
             row["data_confidence"]="LIVE"
             row["pump_pct"]=max(0,h24/100)
-            row["drawdown_from_peak"]=0
-            row["pump_age_h"]=0
+            row["pump_measurement"]="24H_CHANGE_PROXY"
+            row["drawdown_from_peak"]=None
+            row["pump_age_h"]=None
             row["pump_stage"]="IGNITION" if ignition and h24 < 30 else "EARLY_PUMP" if h24 < 100 else "PUMPED_24H"
             row["post_pump_score"]=row["fresh_score"]
             row["post_pump_edge"]=round(row["fresh_score"],2)
-            row["score"]=clamp(0.78*row["fresh_score"]+0.14*row["lp_score"]+0.08*meme_score,0,100)
+            row["score"]=clamp(
+                0.78*row["fresh_score"]+0.14*row["lp_score"]+0.08*meme_score,
+                0,100)
             candidates.append(row)
         except Exception:
             continue
 
-    # Controlled fallback keeps the scanner useful during thin market periods.
-    # It is only activated when the strict LP-discovery funnel returns zero rows.
-    if not candidates and discovered:
-        funnel["fallback_mode"] = True
+    # Stage 2: discovery fallback. The radar should still show viable young
+    # meme candidates when the strict LP funnel is sparse. These rows are NOT
+    # automatically "good LPs"; Review/Pool Lab decides that.
+    fallback_target=max(8,min(int(limit),20))
+    if len(candidates) < fallback_target and discovered:
+        funnel["fallback_mode"]=True
+        existing={x.get("token") for x in candidates if x.get("token")}
+
         for p in discovered:
+            if len(candidates) >= int(limit):
+                break
             try:
                 meme_score,_=memecoin_score(p)
-                if meme_score < 15:
+                if meme_score < 12:
                     continue
+
                 _,row=rank_pair(p,strategy)
-                if row["liquidity"] < 500:
+                token=row.get("token")
+                if token in existing:
                     continue
-                age_h=row["age_h"]; h1=row["h1"]; h24=row["h24"]
-                v1=row["v1"]; v24=row["v24"]; liq=row["liquidity"]
-                if not 6 <= age_h <= 168:
+
+                if row["liquidity"] < 300:
                     continue
+
+                age_h=row["age_h"]
+                h1=row["h1"]
+                h6=row["h6"]
+                h24=row["h24"]
+                v1=row["v1"]
+                v24=row["v24"]
+                liq=row["liquidity"]
+
+                if not 1 <= age_h <= 168:
+                    continue
+
                 t1=p.get("txns") or {}
                 h1tx=t1.get("h1") or {}
                 txns=int(h1tx.get("buys") or 0)+int(h1tx.get("sells") or 0)
-                active=(v1 >= max(300,liq*0.0075) or
-                        v24 >= max(2500,liq*0.04) or txns >= 50)
+
+                active=(
+                    v1 >= max(200,liq*0.004) or
+                    v24 >= max(1500,liq*0.025) or
+                    txns >= 25
+                )
                 if not active:
                     continue
-                if h1 >= 100 and h24 >= 500:
+
+                # Keep obvious vertical pumps out of the radar, but don't
+                # discard normal momentum because the LP engine will judge it.
+                if h1 >= 120 and h24 >= 600:
                     continue
-                if row["fresh_score"] < 22:
+
+                if row["fresh_score"] < 18:
                     continue
+
                 if only_meteora and not row["meteora"]:
                     continue
 
-                row["scan_tier"]="FALLBACK"
+                row["scan_tier"]="DISCOVERY"
                 row["source"]="DexScreener"
                 row["history_available"]=False
                 row["data_confidence"]="LIVE"
-                row["volume_acceleration"]=round(safe_div(v1,max(v24/24,1),0),3)
+                row["volume_acceleration"]=round(
+                    safe_div(v1,max(v24/24,1),0),3)
                 row["volume_persistence"]=round(clamp(
                     0.55*score01(v24/max(liq*0.15,1))+
                     0.45*score01(v1/max(liq*0.03,1)),0,1),3)
@@ -906,40 +958,66 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 row["pump_measurement"]="24H_CHANGE_PROXY"
                 row["drawdown_from_peak"]=None
                 row["pump_age_h"]=None
-                row["pump_stage"]="FALLBACK_DISCOVERY"
+                row["pump_stage"]="DISCOVERY"
                 row["post_pump_score"]=row["fresh_score"]
                 row["post_pump_edge"]=round(row["fresh_score"],2)
                 row["score"]=clamp(
-                    0.72*row["fresh_score"]+0.18*row["lp_score"]+0.10*meme_score,
-                    0,100)
+                    0.64*row["fresh_score"]+
+                    0.24*row["lp_score"]+
+                    0.12*meme_score,0,100)
                 candidates.append(row)
+                existing.add(token)
             except Exception:
                 continue
     else:
-        funnel["fallback_mode"] = False
+        funnel["fallback_mode"]=False
 
     funnel["fallback_24h"]=len(candidates)
     funnel["final_before_dedupe"]=len(candidates)
+
     by_token={}
     for x in candidates:
         key=x.get("token") or ("pair:"+str(x.get("pair") or ""))
         old=by_token.get(key)
-        if old is None or (x["score"],x["fresh_score"],x["v1"])>(old["score"],old["fresh_score"],old["v1"]):
+        if old is None or (
+            x["score"],x["fresh_score"],x["v1"]
+        ) > (
+            old["score"],old["fresh_score"],old["v1"]
+        ):
             by_token[key]=x
+
     funnel["final"]=len(by_token)
-    rows=sorted(by_token.values(),key=lambda x:(x["score"],x["fresh_score"],x["lp_score"],x["v1"],x["liquidity"]),reverse=True)[:limit]
+    rows=sorted(
+        by_token.values(),
+        key=lambda x:(
+            x["score"],x["fresh_score"],x["lp_score"],
+            x["v1"],x["liquidity"]
+        ),
+        reverse=True
+    )[:limit]
 
     return {
-        "generated_at":int(time.time()),"count":len(rows),"rows":rows,
+        "generated_at":int(time.time()),
+        "count":len(rows),
+        "rows":rows,
         "source":"DexScreener" if rows else "none",
         "filters":{
-            "min_liquidity_usd_dex":1000,"memecoin_score_min":20,
-            "unique_tokens":True,"memecoin_only":True,
-            "age_hours_min":0.5,"age_hours_max":168,"fresh_score_min":32,
-            "ignition_preferred":True,"runaway_excluded":True,
-            "historical_provider":False,"gmgn_enabled":False,
-            "gmgn_mode":"web-reference-only","only_meteora":only_meteora,
-            "strategy":strategy},
+            "min_liquidity_usd_dex":300,
+            "memecoin_score_min":12,
+            "unique_tokens":True,
+            "memecoin_only":True,
+            "age_hours_min":1,
+            "age_hours_max":168,
+            "fresh_score_min":18,
+            "ignition_preferred":False,
+            "runaway_excluded":True,
+            "historical_provider":False,
+            "gmgn_enabled":False,
+            "gmgn_mode":"web-reference-only",
+            "only_meteora":only_meteora,
+            "strategy":strategy,
+            "scanner_role":"DISCOVERY_ONLY"
+        },
         "funnel":funnel,
     }
 
