@@ -1048,6 +1048,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
 
             row = {
                 "token": token,
+                "chain": chain,
                 "base": symbol,
                 "name": name,
                 "quote": (p.get("quoteToken") or {}).get("symbol"),
