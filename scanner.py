@@ -66,30 +66,103 @@ def continuation_score(price_change,volume,liquidity,txns,buys,sells,age_h,price
 
 MEME_BLOCKLIST = {
     "SOL","WSOL","USDC","USDT","USDE","DAI","USD1","PYUSD","FDUSD",
-    "BTC","WBTC","ETH","WETH","JITOSOL","MSOL","JUP","JTO","RAY","ORCA","PYTH","LINK","UNI","AAVE"
+    "BTC","WBTC","ETH","WETH","JITOSOL","MSOL","JUP","JTO","RAY","ORCA",
+    "PYTH","LINK","UNI","AAVE","WEN","DRIFT","JUPSOL"
 }
+
 MEME_WORDS = {
     "meme","pepe","dog","doge","cat","frog","inu","shib","wif","bonk",
     "wojak","chad","trump","moon","pump","baby","goat","mog","popcat",
-    "slerf","pnut","brett","based","kitty","ape"
+    "slerf","pnut","brett","based","kitty","ape","bear","bull",
+    "elon","samoyed","floki","toshi","bobo","turbo","andy","giga","sigma",
+    "npc","ponke","michi","myro","nosana","wen"
 }
-MEME_DEXS = {"pumpfun","pump.fun","raydium","meteora","meteora-dlmm","orca"}
+
+UTILITY_WORDS = {
+    "protocol","network","finance","swap","dex","oracle","wallet","staking",
+    "governance","bridge","index","vault","dao","market","exchange","lend",
+    "liquid","yield","restake","perps","perpetual","infrastructure"
+}
+
+def _token_text(p):
+    base=p.get("baseToken") or {}
+    symbol=str(base.get("symbol") or "").strip()
+    name=str(base.get("name") or "").strip()
+    return symbol, name
+
+def memecoin_score(p):
+    """Heuristic score 0..100 for meme-like Solana launches."""
+    symbol, name = _token_text(p)
+    sym=symbol.lower()
+    nm=name.lower()
+    hay=(sym+" "+nm).strip()
+    dex=str(p.get("dexId") or "").lower()
+
+    if not symbol or symbol.upper() in MEME_BLOCKLIST:
+        return 0, ["blocked asset"]
+
+    score=0.0
+    reasons=[]
+
+    if any(w in hay for w in MEME_WORDS):
+        score += 42
+        reasons.append("meme keyword")
+
+    if "pump" in dex and "fun" in dex:
+        score += 42
+        reasons.append("pump.fun origin")
+
+    if len(symbol) <= 6:
+        score += 5
+        reasons.append("short ticker")
+    if any(ch.isdigit() for ch in symbol):
+        score += 2
+
+    ch=p.get("priceChange") or {}
+    vol=p.get("volume") or {}
+    tx=p.get("txns") or {}
+    v1=float(vol.get("h1") or 0)
+    liq=float((p.get("liquidity") or {}).get("usd") or 0)
+    t1=tx.get("h1") or {}
+    buys=int(t1.get("buys") or 0)
+    sells=int(t1.get("sells") or 0)
+    txns=buys+sells
+    created=p.get("pairCreatedAt") or 0
+    age_h=max(0,(time.time()*1000-created)/3600000) if created else 999
+    h1=abs(float(ch.get("h1") or 0))
+    h24=abs(float(ch.get("h24") or 0))
+
+    if age_h <= 24 and txns >= 30:
+        score += 18
+        reasons.append("new + active")
+    elif age_h <= 72 and txns >= 50:
+        score += 12
+        reasons.append("young + active")
+    elif age_h <= 168 and txns >= 100:
+        score += 6
+        reasons.append("recent + active")
+
+    if liq and liq <= 500_000 and v1 >= max(500, liq*0.10):
+        score += 10
+        reasons.append("small-liquidity/high-turnover")
+
+    if txns >= 200:
+        score += 6
+        reasons.append("high transaction activity")
+
+    if h1 >= 8 or h24 >= 15:
+        score += 6
+        reasons.append("momentum")
+
+    if any(w in hay for w in UTILITY_WORDS):
+        score -= 30
+        reasons.append("utility keyword")
+
+    return clamp(score,0,100), reasons
 
 def is_memecoin_pair(p):
-    base=p.get("baseToken") or {}
-    symbol=str(base.get("symbol") or "").upper().strip()
-    name=str(base.get("name") or "").lower().strip()
-    dex=str(p.get("dexId") or "").lower().strip()
-    address=str(base.get("address") or "")
-    if not address or symbol in MEME_BLOCKLIST:
-        return False
-    hay=symbol.lower()+" "+name
-    meme_word=any(w in hay for w in MEME_WORDS)
-    meme_dex=any(x in dex for x in MEME_DEXS)
-    stable_words=("usd","stable","wrapped","bitcoin","ethereum","solana")
-    if any(w in hay for w in stable_words) and not meme_word:
-        return False
-    return meme_word or meme_dex
+    score,_=memecoin_score(p)
+    return score >= 35
 
 def rank_pair(p):
     ch=p.get("priceChange") or {}; vol=p.get("volume") or {}; tx=p.get("txns") or {}
@@ -101,13 +174,20 @@ def rank_pair(p):
     s=continuation_score(h1,v1,liq,buys+sells,buys,sells,age_h,m5)
     s-=clamp(max(0,m5-12)/35,0,1)*15
     s-=clamp((25_000-liq)/25_000,0,1)*20
-    return clamp(s,0,100),{"price":float(p.get("priceUsd") or 0),"h1":h1,"m5":m5,
+    meme_score,meme_reasons=memecoin_score(p)
+    final_score=clamp(0.72*s + 0.28*meme_score,0,100)
+
+    return final_score,{"price":float(p.get("priceUsd") or 0),"h1":h1,"m5":m5,
       "h6":float(ch.get("h6") or 0),"h24":float(ch.get("h24") or 0),"v1":v1,
       "v24":float(vol.get("h24") or 0),"liquidity":liq,"buy_ratio":buy_ratio,
       "vol_liq":vol_liq,"age_h":age_h,"pair":p.get("pairAddress"),"dex":p.get("dexId"),
       "url":p.get("url"),"base":p.get("baseToken",{}).get("symbol"),
-      "quote":p.get("quoteToken",{}).get("symbol"),"score":clamp(s,0,100),
-      "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"}, "token":(p.get("baseToken") or {}).get("address"), "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))}
+      "name":p.get("baseToken",{}).get("name"),
+      "quote":p.get("quoteToken",{}).get("symbol"),"score":final_score,
+      "memecoin_score":meme_score,"meme_reasons":meme_reasons,
+      "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"},
+      "token":(p.get("baseToken") or {}).get("address"),
+      "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))}
 
 def fetch_search_pairs():
     """Broad Solana discovery with token-level diversity."""
@@ -163,7 +243,8 @@ def scan(limit=40,only_meteora=False):
 
     for p in fetch_search_pairs():
         try:
-            if not is_memecoin_pair(p):
+            meme_score,_=memecoin_score(p)
+            if meme_score < 35:
                 continue
             score,row=rank_pair(p)
             if row["liquidity"] < 500:
@@ -175,24 +256,17 @@ def scan(limit=40,only_meteora=False):
         except Exception:
             continue
 
-    # IMPORTANT: one token gets one result. If it has several pools, keep
-    # the strongest pool so the table shows different meme coins.
     by_token={}
     for x in candidates:
         token=x.get("token") or ""
         key=token or ("pair:"+str(x.get("pair") or ""))
-        if key not in by_token:
-            by_token[key]=x
-            continue
-        old=by_token[key]
-        old_key=(old["score"],old["v1"],old["liquidity"])
-        new_key=(x["score"],x["v1"],x["liquidity"])
-        if new_key > old_key:
+        old=by_token.get(key)
+        if old is None or (x["score"],x["v1"],x["liquidity"]) > (old["score"],old["v1"],old["liquidity"]):
             by_token[key]=x
 
     rows=sorted(
         by_token.values(),
-        key=lambda x:(x["score"],x["v1"],x["liquidity"]),
+        key=lambda x:(x["score"],x["memecoin_score"],x["v1"],x["liquidity"]),
         reverse=True
     )[:limit]
 
@@ -206,6 +280,7 @@ def scan(limit=40,only_meteora=False):
             "min_1h_pump_dex":0,
             "min_1h_volume_usd_dex":0,
             "min_liquidity_usd_dex":500,
+            "memecoin_score_min":35,
             "unique_tokens":True,
             "memecoin_only":True,
             "gmgn_enabled":False,
