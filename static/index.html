@@ -36,6 +36,8 @@ hr{border-color:var(--line)!important}
 .hidden{display:none}.review{display:none}
 @media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.main,.bottom,.review-shell{grid-template-columns:1fr}.review-shell{min-height:auto}}
 @media(max-width:650px){.kpis{grid-template-columns:repeat(2,1fr)}.top{padding:0 10px}.wrap{padding:7px}.card{padding:8px}.toolbar{overflow:auto}}
+
+.simple-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:18px 0 12px}.eyebrow{font-size:9px;letter-spacing:1.4px;color:var(--green);font-weight:800}.simple-head h1{margin:3px 0;font-size:24px;letter-spacing:-.5px}.simple-toolbar{margin-bottom:8px}.simple-kpis{grid-template-columns:repeat(3,1fr)}.simple-toolbar .primary,.primary{background:#46d89a;color:#06100c;border-color:#46d89a;font-weight:800}.scanner-card{padding:0;overflow:hidden}.scanner-card>.section-title{padding:11px 12px 0}.scanner-meta{padding:7px 12px;color:var(--muted);font-size:10px;border-bottom:1px solid var(--line)}.table-wrap{overflow:auto;max-height:52vh}.table-wrap table{min-width:760px}.table-wrap tr.pick:hover td{background:#101a22}.selected-card{margin-top:8px}.selected-card #selected{display:grid;grid-template-columns:1.5fr repeat(5,1fr);gap:8px;align-items:center}.selected-card .pulse-row{border:0;padding:0;display:block}.selected-card .pulse-row span{display:block;color:var(--muted);font-size:9px;text-transform:uppercase}.selected-card .pulse-row b{display:block;margin-top:3px}.selected-card .token{font-size:18px}.selected-card #reviewBtn{margin-top:12px}@media(max-width:800px){.simple-head{align-items:flex-start}.simple-head h1{font-size:20px}.simple-kpis{grid-template-columns:1fr 1fr 1fr}.selected-card #selected{grid-template-columns:1fr 1fr}.selected-card #selected .token{grid-column:1/-1}}
 </style>
 </head>
 <body>
@@ -45,63 +47,53 @@ hr{border-color:var(--line)!important}
 </header>
 <main class="wrap">
 <section id="dashboard">
-<div class="toolbar">
-  <select id="limit"><option>20</option><option selected>40</option><option>80</option></select>
-  <select id="mode"><option value="balanced">BALANCED</option><option value="conservative">CONSERVATIVE</option><option value="aggressive">AGGRESSIVE</option></select>
-  <label class="small muted"><input id="met" type="checkbox"> Meteora only</label>
-  <button onclick="load()">SCAN</button>
-  <div class="right muted small" id="status">ready</div>
-</div>
+  <div class="simple-head">
+    <div>
+      <div class="eyebrow">POOL SCANNER</div>
+      <h1>Find pools. Review later.</h1>
+      <div class="sub">DexScreener flow · all chains · no formula in scanner</div>
+    </div>
+    <div id="status" class="status">READY</div>
+  </div>
 
-<div class="grid kpis">
- <div class="card"><div class="label">Targets</div><div class="value" id="kPools">—</div><div class="sub">DexScreener now</div></div>
- <div class="card"><div class="label">Pump targets</div><div class="value green" id="kOpp">—</div><div class="sub">passed scanner</div></div>
- <div class="card"><div class="label">High risk</div><div class="value red" id="kRisk">—</div><div class="sub">directional pressure</div></div>
- <div class="card"><div class="label">Avg volume</div><div class="value" id="kScore">—</div><div class="sub" id="scoreMode">DexScreener 1H</div></div>
- <div class="card"><div class="label">Avg Vol/Liq</div><div class="value cyan" id="kVL">—</div><div class="sub">fee intensity proxy</div></div>
- <div class="card"><div class="label">Meteora</div><div class="value purple" id="kMet">—</div><div class="sub">eligible pools</div></div>
-</div>
+  <div class="toolbar simple-toolbar">
+    <select id="limit"><option>20</option><option selected>40</option><option>80</option></select>
+    <select id="mode"><option value="balanced">BALANCED</option><option value="conservative">CONSERVATIVE</option><option value="aggressive">AGGRESSIVE</option></select>
+    <label class="small muted"><input id="met" type="checkbox"> Meteora only</label>
+    <button class="primary" onclick="load()">SCAN</button>
+  </div>
 
-<div class="card" style="margin-top:8px">
- <div class="section-title">SCANNER FUNNEL <span class="muted">· token flow</span></div>
- <div id="funnel" class="pulse-row" style="gap:14px;flex-wrap:wrap"></div>
-</div>
+  <div class="grid kpis simple-kpis">
+    <div class="card"><div class="label">TARGETS</div><div class="value" id="kOpp">—</div><div class="sub">passed scanner</div></div>
+    <div class="card"><div class="label">AVG VOL 1H</div><div class="value" id="kScore">—</div><div class="sub">DexScreener</div></div>
+    <div class="card"><div class="label">CHAINS</div><div class="value" id="kPools">—</div><div class="sub">discovered pairs</div></div>
+  </div>
 
-<div class="grid main" style="margin-top:10px">
- <div class="card">
-  <div class="section-title">SCANNER PULSE</div>
-  <div class="pulse-row"><span>Volume 1H</span><b id="pFee">—</b></div>
-  <div class="pulse-row"><span>Liquidity</span><b id="pLiq">—</b></div>
-  <div class="pulse-row"><span>Buy + Sell</span><b id="pAct">—</b></div>
-  <div class="pulse-row"><span>Buy Ratio</span><b id="pSafe">—</b></div>
-  <div class="label" style="margin-top:14px">Market activity</div>
-  <div class="meter"><i id="pulseBar" style="width:0%"></i></div>
-  <div class="sub" style="margin-top:6px" id="pulseText">Scan untuk membaca kondisi pasar.</div>
- </div>
+  <div class="card scanner-card">
+    <div class="section-title">TARGETS</div>
+    <div class="scanner-meta" id="funnel">READY TO SCAN</div>
+    <div class="table-wrap">
+      <table><thead><tr>
+        <th>TOKEN</th><th>CHAIN / DEX</th><th>AGE</th><th>VOL 1H</th><th>BUY</th><th>SELL</th><th>LIQUIDITY</th>
+      </tr></thead><tbody id="rows"></tbody></table>
+    </div>
+  </div>
 
- <div class="card">
-  <div class="section-title">TARGET SCANNER <span class="muted">· DexScreener flow · click row</span></div>
-  <div style="overflow:auto;max-height:285px">
-  <table><thead><tr><th>TOKEN</th><th>AGE</th><th>VOL 24H</th><th>BUY 1H</th><th>SELL 1H</th><th>AGE BAND</th></tr></thead>
-  <tbody id="rows"></tbody></table></div>
- </div>
+  <div class="card selected-card">
+    <div class="section-title">SELECTED</div>
+    <div id="selected"><div class="empty">Pilih target di atas.</div></div>
+    <button id="reviewBtn" class="primary hidden" type="button">REVIEW</button>
+  </div>
 
- <div class="card rightcol">
-  <div class="section-title">WHY THIS POOL?</div>
-  <div id="why"><div class="empty">Pilih kandidat untuk melihat alasan.</div></div>
-  <div class="section-title" style="margin-top:12px">RISK SNAPSHOT</div>
-  <div id="riskSnap" class="sub">Belum ada pool dipilih.</div>
- </div>
-</div>
-
-<div class="grid bottom" style="margin-top:10px">
- <div class="card"><div class="section-title">OPPORTUNITY RADAR</div>
-  <div class="radar" id="radar"><div class="axisx"></div><div class="axisy"></div><span class="axislabel toplab">HIGH FEE</span><span class="axislabel botlab">LOW FEE</span><span class="axislabel leftlab">HIGH RISK</span><span class="axislabel rightlab">LOW RISK</span></div>
- </div>
- <div class="card"><div class="section-title">FLOW HEATMAP</div><div class="heat" id="heat"><div>TOKEN</div><div>FEE</div><div>RANGE</div><div>RISK</div></div></div>
- <div class="card panel-scroll"><div class="section-title">SELECTED TARGET</div><div id="selected"><div class="empty">Belum ada pool dipilih.</div></div></div>
-</div>
+  <div id="legacy" class="hidden">
+    <span id="kRisk"></span><span id="kVL"></span><span id="kMet"></span>
+    <span id="scoreMode"></span><span id="pFee"></span><span id="pLiq"></span><span id="pAct"></span><span id="pSafe"></span>
+    <span id="pulseBar"></span><span id="pulseText"></span><span id="why"></span><span id="riskSnap"></span>
+    <span id="heat"></span><span id="radar"></span>
+  </div>
 </section>
+
+
 
 <section id="review" class="review"></section>
 </main>
@@ -148,9 +140,9 @@ function render(d){
  $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('')
    +'<span style="flex-basis:100%;border-top:1px solid var(--line);padding-top:6px"><b>DISCOVERY</b> <span class="muted">'+discoveryLine+(discoveryErrors?' · ERR '+discoveryErrors:'')+'</span></span>';
  if(!rows.length){
-   $('status').textContent=d.discovery_status==='NO_SOLANA_PAIRS'
-     ? 'DexScreener tidak mengembalikan pair Solana. Cek DISCOVERY.'
-     : 'Pair ditemukan, tetapi tidak lolos filter age / volume / buy-sell.';
+   $('status').textContent=d.discovery_status==='NO_PAIRS'
+     ? 'DexScreener tidak mengembalikan pair. Cek discovery.'
+     : 'Pair ditemukan, tetapi tidak lolos filter.';
  }
 
  $('pFee').textContent=rows.length?'LIVE':'—';
