@@ -2,7 +2,7 @@ import json
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from scanner import scan
+from scanner import scan, review_pair
 
 
 class handler(BaseHTTPRequestHandler):
@@ -24,6 +24,17 @@ class handler(BaseHTTPRequestHandler):
                 limit = min(max(int(q.get("limit", ["40"])[0]), 1), 100)
                 meteora = q.get("meteora", ["0"])[0] == "1"
                 self._send_json(200, scan(limit, meteora))
+            except Exception as exc:
+                self._send_json(502, {"error": str(exc)})
+            return
+
+        if path == "/api/review":
+            try:
+                q = parse_qs(urlparse(self.path).query)
+                pair = q.get("pair", [""])[0]
+                if not pair:
+                    raise ValueError("pair wajib diisi")
+                self._send_json(200, review_pair(pair))
             except Exception as exc:
                 self._send_json(502, {"error": str(exc)})
             return
