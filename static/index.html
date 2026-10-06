@@ -138,13 +138,22 @@ function render(d){
  $('kVL').textContent=rows.length?(rows.reduce((a,x)=>a+x.vol_liq,0)/rows.length).toFixed(1)+'x':'—';
  $('kMet').textContent=rows.filter(x=>x.meteora).length;
 
- const f=d.funnel||{};
+ const f=d.funnel||{}, dd=f.discovery||{};
  const funnelItems=[
   ['FOUND',f.discovered],['MEME',f.meme_score],['0.5–7D',f.age_1_7d],
   ['VOL',f.active_volume],['IGNITION',f.ignition],['FRESH',f.fresh_qualified],
-  ['NOT RUNAWAY',f.not_runaway],['PUMP ≥30%',f.pump_30pct],['FINAL',f.final]
+  ['NOT RUNAWAY',f.not_runaway],['FINAL',f.final]
  ];
- $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('');
+ const discoveryLine='SEARCH '+Number(dd.search_pairs_raw||0)+' · SEED '+Number(dd.seed_tokens||0)+' · EXPAND '+Number(dd.pair_expansion_pairs||0)+' · SOLANA '+Number(dd.solana_pairs||0);
+ const discoveryErrors=(dd.errors||[]).length;
+ $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('')
+   +'<span style="flex-basis:100%;border-top:1px solid var(--line);padding-top:6px"><b>DISCOVERY</b> <span class="muted">'+discoveryLine+(discoveryErrors?' · ERR '+discoveryErrors:'')+'</span></span>';
+ if(!rows.length){
+   const reason=d.discovery_status==='NO_SOLANA_PAIRS'
+     ? 'DexScreener tidak mengembalikan pair Solana. Cek DISCOVERY di atas, bukan filter meme.'
+     : 'Pair ditemukan, tetapi semuanya gugur di funnel. Gunakan angka tiap tahap untuk menemukan bottleneck.';
+   $('status').textContent=reason;
+ }
  
  const avg=k=>rows.length?rows.reduce((a,x)=>a+(x.lp_components?.[k]||0),0)/rows.length:0;
  $('pFee').textContent=avg('fee_potential').toFixed(0);
