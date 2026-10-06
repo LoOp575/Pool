@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json, math, time, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dlmm_lp_engine import Candle, math_engine, classify_regime, range_engine, bootstrap_monte_carlo, risk_engine
 
 UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=8
 import os
@@ -382,6 +383,50 @@ def fetch_search_pairs():
 
 
 
+def historical_candles(pair_address, timeframe="hour", limit=168):
+    """Fetch real OHLCV candles for analysis only."""
+    url=("https://api.geckoterminal.com/api/v2/networks/solana/pools/"
+         + urllib.parse.quote(str(pair_address), safe="")
+         + f"/ohlcv/{timeframe}?aggregate=1&limit={int(limit)}")
+    data=get_json(url)
+    rows=((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+    candles=[]
+    for row in reversed(rows):
+        if not isinstance(row,list) or len(row)<6: continue
+        try:
+            ts,o,h,l,c,v=row[:6]
+            candles.append(Candle(int(float(ts)*1000),float(o),float(h),float(l),float(c),float(v or 0)))
+        except (TypeError,ValueError):
+            continue
+    if len(candles)<30:
+        raise ValueError(f"OHLCV historis tidak cukup: {len(candles)}/30 candle")
+    return candles
+
+def monte_carlo_review(pair_address, live_price, horizon_bars=24, paths=2000):
+    """Run the real Monte Carlo engine from real historical candles."""
+    candles=historical_candles(pair_address)
+    closes=[c.close for c in candles]
+    m=math_engine(candles)
+    regime=classify_regime(m)
+    r=range_engine(m,regime,closes)
+    mc=bootstrap_monte_carlo(closes,r.lower_price,r.upper_price,horizon_bars,paths)
+    risk=risk_engine(m,r,mc,fee_apr=0,horizon_days=horizon_bars/24)
+    return {
+        "paths":mc.paths,"horizon_bars":mc.horizon_bars,
+        "p_below":mc.p_below,"p_inside":max(0,1-mc.p_out_of_range),
+        "p_above":mc.p_above,"p_out_of_range":mc.p_out_of_range,
+        "expected_terminal_price":mc.expected_terminal_price,
+        "p05":mc.p5,"p50":mc.p50,"p95":mc.p95,
+        "current_price":live_price,"historical_candles":len(candles),
+        "historical_source":"GeckoTerminal OHLCV","regime":regime.value,
+        "range":{"lower":r.lower_price,"center":r.center_price,"upper":r.upper_price,"width_pct":r.width_pct},
+        "math":{"atr_pct":m.atr_pct,"volatility":m.volatility,"volatility_ratio":m.volatility_ratio,
+                "z_score":m.z_score,"trend_strength":m.trend_strength,"volume_pressure":m.volume_pressure,
+                "entropy":m.entropy,"mean_reversion_force":m.mean_reversion_force,"rvol":m.rvol},
+        "risk":{"score":risk.risk_score,"probability_out_of_range":risk.probability_out_of_range,
+                "il_proxy":risk.il_proxy,"notes":risk.notes}
+    }
+
 def dex_pair(pair_address):
     """Fetch one live Solana pair directly from DexScreener."""
     url = f"{DEX_URL}/latest/dex/pairs/solana/{urllib.parse.quote(str(pair_address), safe='')}"
@@ -440,8 +485,14 @@ def _live_analysis(p, strategy="balanced"):
 
 
 def _live_review(pair):
-    p = dex_pair(pair)
-    analysis, row = _live_analysis(p)
+    p=dex_pair(pair)
+    analysis,row=_live_analysis(p)
+    mc=None
+    mc_error=None
+    try:
+        mc=monte_carlo_review(p.get("pairAddress"),float(p.get("priceUsd") or 0),24,2000)
+    except Exception as exc:
+        mc_error=str(exc)
     ch = p.get("priceChange") or {}
     vol = p.get("volume") or {}
     tx = p.get("txns") or {}
@@ -498,8 +549,8 @@ def _live_review(pair):
         "formula_engine": FORMULA_ENGINE_VERSION,
         "regime": regime,
         "analysis": analysis,
-        "confidence": "LIVE",
-        "data_source": "DexScreener",
+        "confidence": "HISTORICAL+LIVE" if mc else "LIVE",
+        "data_source": "DexScreener + GeckoTerminal OHLCV" if mc else "DexScreener",
         "pair": p.get("pairAddress"),
         "token": (p.get("baseToken") or {}).get("address"),
         "dex": p.get("dexId"),
@@ -527,7 +578,9 @@ def _live_review(pair):
             "price_usd": price,
         },
         "range": range_plan,
-        "monte_carlo": None,
+        "monte_carlo": mc,
+        "monte_carlo_status": "ACTIVE" if mc else "UNAVAILABLE",
+        "monte_carlo_error": mc_error,
         "risk": {
             "score": risk_score,
             "out_of_range": out_proxy,
@@ -551,8 +604,8 @@ def _live_review(pair):
                 []
             ),
         },
-        "history": 0,
-        "history_status": "NO_REAL_OHLCV",
+        "history": int(mc.get("historical_candles",0)) if mc else 0,
+        "history_status": "REAL_OHLCV" if mc else "NO_REAL_OHLCV",
         "bin": None,
         "bin_note": "Active bin + bin step harus diambil dari metadata pool Meteora sebelum bin ID dihitung.",
     }
