@@ -424,7 +424,14 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
     buy_pressure = (buy_ratio - 0.5) * 2.0
 
     volume_liq = safe_div(float(volume_1h or 0), max(float(liquidity or 0), 1), 0)
-    volume_force = score01(math.log1p(max(volume_liq, 0)) / math.log1p(20))
+    volume_24_liq = safe_div(float(volume_24h or 0), max(float(liquidity or 0), 1), 0)
+    volume_acceleration = safe_div(float(volume_1h or 0), max(float(volume_24h or 0) / 24.0, 1.0), 0)
+    volume_force = clamp(
+        0.65 * score01(math.log1p(max(volume_liq, 0)) / math.log1p(20)) +
+        0.35 * score01(math.log1p(max(volume_24_liq, 0)) / math.log1p(60)),
+        0, 1
+    )
+    acceleration_force = score01(volume_acceleration / 3.0)
     activity_force = score01(math.log1p(max(int(transactions), 0)) / math.log1p(1000))
 
     # Thin liquidity increases jump intensity and jump dispersion.
@@ -452,6 +459,7 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
         0.003 +
         0.010 * volume_force +
         0.006 * activity_force +
+        0.004 * acceleration_force +
         0.012 * liquidity_force +
         0.006 * abs(momentum),
         0.003, 0.045
@@ -471,8 +479,9 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
     # The state layer only estimates them; the simulation uses the exact
     # Poisson/lognormal structure from the model.
     jump_prob_step = clamp(
-        0.010 * volume_force +
-        0.012 * liquidity_force +
+        0.008 * volume_force +
+        0.006 * acceleration_force +
+        0.010 * liquidity_force +
         0.008 * abs(directional_pressure),
         0, 0.035
     )
@@ -547,6 +556,9 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
             "buy_ratio": buy_ratio,
             "buy_pressure": buy_pressure,
             "volume_force": volume_force,
+            "volume_24_liq": volume_24_liq,
+            "volume_acceleration": volume_acceleration,
+            "acceleration_force": acceleration_force,
             "activity_force": activity_force,
             "liquidity_force": liquidity_force,
             "momentum": momentum,
