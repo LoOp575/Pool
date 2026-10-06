@@ -27,32 +27,43 @@ FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
 
 
 def fetch_seed_tokens():
-    """Broad Solana discovery using documented public DexScreener endpoints."""
+    """Discover Solana tokens from DexScreener public feeds only.
+
+    No keyword search is used. The scanner gets token addresses from the
+    same broad boost feeds used by Tool-Trade, then resolves live pairs.
+    """
     out={}
-    paths=["/token-profiles/latest/v1","/token-boosts/latest/v1","/token-boosts/top/v1",
-           "/community-takeovers/latest/v1","/ads/latest/v1"]
-    for path in paths:
+    for path in ("/token-boosts/latest/v1", "/token-boosts/top/v1"):
         try:
             data=get_json(DEX_URL+path)
-            for x in data if isinstance(data,list) else []:
-                if x.get("chainId")=="solana" and x.get("tokenAddress"):
-                    out[x["tokenAddress"]]=x
-        except Exception:
-            pass
-
-    # Search is a much wider discovery net than profiles/boosts alone.
-    # Each query returns a fresh set of pairs; dedup happens below.
-    for q in ["SOL","USDC","USDT","pump","meme","dog","cat","pepe","ai","inu","moon"]:
-        try:
-            data=get_json(DEX_URL+"/latest/dex/search?"+urllib.parse.urlencode({"q":q}))
-            for p in (data.get("pairs") or []) if isinstance(data,dict) else []:
-                if p.get("chainId")=="solana":
-                    token=(p.get("baseToken") or {}).get("address")
-                    if token:
-                        out[token]={"chainId":"solana","tokenAddress":token}
+            for item in data if isinstance(data,list) else []:
+                if item.get("chainId")=="solana" and item.get("tokenAddress"):
+                    out[str(item["tokenAddress"])]={
+                        "chainId":"solana",
+                        "tokenAddress":str(item["tokenAddress"])
+                    }
         except Exception:
             pass
     return list(out.values())
+
+
+def fetch_pairs_batch(tokens):
+    """Resolve live pairs in DexScreener token batches, max 30 addresses."""
+    if not tokens:
+        return []
+    all_pairs=[]
+    for i in range(0, len(tokens), 30):
+        batch=tokens[i:i+30]
+        addresses=",".join(t["tokenAddress"] for t in batch)
+        try:
+            data=get_json(
+                DEX_URL+"/latest/dex/tokens/"+urllib.parse.quote(addresses,safe=",")
+            )
+            if isinstance(data,dict):
+                all_pairs.extend(data.get("pairs") or [])
+        except Exception:
+            continue
+    return all_pairs
 
 def fetch_pairs(token):
     try:return get_json(f"{DEX_URL}/token-pairs/v1/solana/{urllib.parse.quote(token,safe='')}") or []
@@ -334,8 +345,7 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """DexScreener-only discovery. Search and public token feeds are combined."""
-    pairs = {}
+    """DexScreener-only broad discovery, without keyword queries."""
     diag = {
         "search_queries_total": 0,
         "search_queries_ok": 0,
@@ -346,86 +356,23 @@ def fetch_search_pairs():
         "solana_pairs": 0,
         "errors": [],
     }
+    tokens=fetch_seed_tokens()
+    diag["feed_tokens"]=len(tokens)
+    diag["expanded_tokens"]=len(tokens)
+    pairs=fetch_pairs_batch(tokens)
+    diag["expanded_pairs"]=len(pairs)
 
-    def error(stage, exc):
-        if len(diag["errors"]) < 12:
-            diag["errors"].append({"stage": stage, "error": str(exc)[:180]})
-
-    def add_pair(p):
+    out={}
+    for p in pairs:
         if (
-            isinstance(p, dict)
-            and p.get("chainId") == "solana"
+            isinstance(p,dict)
+            and p.get("chainId")=="solana"
             and p.get("pairAddress")
         ):
-            pairs[p["pairAddress"]] = p
+            out[p["pairAddress"]]=p
 
-    # 1) Direct search discovery.
-    def search(q):
-        try:
-            return q, get_json(
-                DEX_URL + "/latest/dex/search?" +
-                urllib.parse.urlencode({"q": q})
-            )
-        except Exception as exc:
-            return q, exc
-
-    queries = ["meme", "pump", "pepe", "bonk", "doge", "wif", "cat", "inu"]
-    diag["search_queries_total"] = len(queries)
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for q, data in pool.map(search, queries):
-            if isinstance(data, Exception):
-                error("search:" + q, data)
-                continue
-            diag["search_queries_ok"] += 1
-            raw = data.get("pairs") or [] if isinstance(data, dict) else []
-            diag["search_pairs_raw"] += len(raw)
-            for p in raw:
-                add_pair(p)
-
-    # 2) Always add current DexScreener public feeds.
-    # Do not wait for search to be empty. Search results can be valid while
-    # still missing the recent Solana launches we actually want.
-    tokens = set()
-    for path in (
-        "/token-profiles/latest/v1",
-        "/token-boosts/latest/v1",
-        "/token-boosts/top/v1",
-    ):
-        try:
-            data = get_json(DEX_URL + path)
-            for item in data if isinstance(data, list) else []:
-                if item.get("chainId") == "solana" and item.get("tokenAddress"):
-                    tokens.add(str(item["tokenAddress"]))
-        except Exception as exc:
-            error("feed:" + path, exc)
-
-    # Keep the request bounded for serverless execution.
-    tokens = list(tokens)[:32]
-    diag["feed_tokens"] = len(tokens)
-
-    def expand(token):
-        try:
-            return token, get_json(
-                DEX_URL + "/token-pairs/v1/solana/" +
-                urllib.parse.quote(token, safe="")
-            )
-        except Exception as exc:
-            return token, exc
-
-    if tokens:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for token, data in pool.map(expand, tokens):
-                diag["expanded_tokens"] += 1
-                if isinstance(data, Exception):
-                    error("pair:" + token, data)
-                    continue
-                for p in data if isinstance(data, list) else []:
-                    diag["expanded_pairs"] += 1
-                    add_pair(p)
-
-    diag["solana_pairs"] = len(pairs)
-    return list(pairs.values()), diag
+    diag["solana_pairs"]=len(out)
+    return list(out.values()), diag
 
 def _poisson_sample(rng, lam):
     """Exact Poisson sampler for the Merton jump-count process."""
@@ -994,10 +941,8 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             if not token or not symbol:
                 continue
 
-            # The search query is the meme discovery mechanism.
-            # Do not apply a second heuristic meme-score gate here.
-            # DexScreener supplies the candidate; scanner only checks
-            # the basic live fields needed by the target radar.
+            # DexScreener supplies the candidate. No meme keyword or
+            # meme-score gate is used by the scanner.
             funnel["meme"] += 1
 
             # Discovery filter only: recent Solana pairs.
