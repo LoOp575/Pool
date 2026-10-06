@@ -312,151 +312,160 @@ def fetch_search_pairs():
     return list(pairs.values())
 
 
-def fetch_hourly_ohlcv(pool_address, limit=200):
-    """Fetch hourly OHLCV so 1-7 day pump history can be measured."""
-    base = "https://api.geckoterminal.com/api/v2/networks/solana/pools/"
-    url = f"{base}{urllib.parse.quote(pool_address, safe='')}/ohlcv/hour?aggregate=1&limit={min(limit,1000)}"
+
+def dex_pair(pair_address):
+    """Fetch one live Solana pair directly from DexScreener."""
+    url = f"{DEX_URL}/latest/dex/pairs/solana/{urllib.parse.quote(str(pair_address), safe='')}"
     data = get_json(url)
-    rows = ((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
-    candles = []
-    for row in rows:
-        if len(row) < 6:
-            continue
-        ts, open_, high, low, close, volume = row[:6]
-        candles.append({
-            "timestamp": int(ts),
-            "open": float(open_),
-            "high": float(high),
-            "low": float(low),
-            "close": float(close),
-            "volume": float(volume),
-        })
-    return list(reversed(candles))
+    pairs = data.get("pairs") or []
+    if not pairs:
+        raise RuntimeError("Pair tidak ditemukan di DexScreener.")
+    # Prefer the exact pair address when the endpoint returns multiple markets.
+    for p in pairs:
+        if p.get("pairAddress") == pair_address:
+            return p
+    return pairs[0]
 
 
-def post_pump_profile(pool_address, age_h):
-    """
-    Historical candidate profile for young memecoins:
-    - pump_pct: largest gain from an earlier local low to a later peak
-    - drawdown_pct: current drawdown from that peak
-    - volume_persistence: post-peak hourly volume vs pre-pump baseline
-    - volume_acceleration: recent hourly volume vs earlier baseline
-    """
-    candles = fetch_hourly_ohlcv(pool_address, 200)
-    if len(candles) < 8:
-        return None
-
-    closes = [max(float(c["close"]), 0) for c in candles]
-    vols = [max(float(c["volume"]), 0) for c in candles]
-    if not closes or closes[0] <= 0:
-        return None
-
-    current = closes[-1]
-    peak_i = 0
-    pump_pct = 0.0
-    pre_low = closes[0]
-    for i in range(1, len(closes)):
-        if closes[i] > 0 and pre_low > 0:
-            gain = closes[i] / pre_low - 1
-            if gain > pump_pct and i >= 2:
-                pump_pct = gain
-                peak_i = i
-        pre_low = min(pre_low, closes[i])
-
-    peak = max(closes[peak_i], 1e-18)
-    drawdown = max(0.0, 1 - current / peak)
-
-    pre_start = max(0, peak_i - 24)
-    pre_vols = vols[pre_start:peak_i] or vols[:max(1, peak_i)]
-    post_vols = vols[peak_i + 1:] or vols[-12:]
-    pre_avg = sum(pre_vols) / max(len(pre_vols), 1)
-    post_avg = sum(post_vols) / max(len(post_vols), 1)
-    recent = vols[-6:]
-    recent_avg = sum(recent) / max(len(recent), 1)
-    earlier = vols[-24:-6] or vols[:-6] or recent
-    earlier_avg = sum(earlier) / max(len(earlier), 1)
-
-    persistence = safe_div(post_avg, pre_avg, 0)
-    acceleration = safe_div(recent_avg, earlier_avg, 0)
-    peak_age_h = max(0.0, (candles[-1]["timestamp"] - candles[peak_i]["timestamp"]) / 3600)
-
-    # LP sweet spot: the pump already happened, price has cooled enough to
-    # reduce runaway range risk, but trading activity has not disappeared.
-    if pump_pct < 0.30:
-        stage = "NO_PUMP"
-    elif peak_age_h < 3 and drawdown < 0.12:
-        stage = "RUNAWAY"
-    elif persistence < 0.35 and acceleration < 0.55:
-        stage = "FADE"
-    elif drawdown >= 0.05 and drawdown <= 0.45 and persistence >= 0.55:
-        stage = "POST_PUMP"
-    else:
-        stage = "PUMPED"
-
-    # Reward the +100% to +500% zone, but don't make it a hard gate.
-    pump_quality = (
-        score01(pump_pct / 1.0) if pump_pct <= 1.0 else
-        score01(1 - max(pump_pct - 5.0, 0) / 10.0)
-    )
-    sweet_spot = 1.0 if 1.0 <= pump_pct <= 5.0 else score01(1 - abs(pump_pct - 2.5) / 5.0)
-    volume_life = score01(persistence / 1.5)
-    recent_activity = score01(acceleration / 1.5)
-    consolidation = score01(1 - max(drawdown - 0.45, 0) / 0.55) * (1 - score01(max(0.05 - drawdown, 0) / 0.05))
-    post_pump_score = 100 * (
-        0.28 * pump_quality +
-        0.15 * sweet_spot +
-        0.28 * volume_life +
-        0.14 * recent_activity +
-        0.15 * consolidation
-    )
-
+def _live_range(price, h1, h6, h24):
+    """Conservative live range proxy using only current DexScreener movement."""
+    move = max(abs(h1) / 100, abs(h6) / 100, abs(h24) / 100, 0.01)
+    width = clamp(0.018 + 0.22 * move, 0.025, 0.55)
+    directional = clamp((0.45 * h1 + 0.30 * h6 + 0.25 * h24) / 100, -0.8, 0.8)
+    center = price * (1 - 0.08 * directional)
+    lower = center * (1 - width * (1 + max(directional, 0) * 0.20))
+    upper = center * (1 + width * (1 - max(-directional, 0) * 0.20))
     return {
-        "age_h": age_h,
-        "pump_pct": pump_pct,
-        "pump_peak_price": peak,
-        "drawdown_from_peak": drawdown,
-        "pump_age_h": peak_age_h,
-        "volume_persistence": persistence,
-        "volume_acceleration": acceleration,
-        "pump_stage": stage,
-        "post_pump_score": clamp(post_pump_score, 0, 100),
-        "history_bars": len(candles),
+        "lower": lower,
+        "center": center,
+        "upper": upper,
+        "width_pct": width,
+        "multipliers": {
+            "source": "DexScreener live proxy",
+            "movement": move,
+            "directional_bias": directional,
+        },
     }
 
 
-def enrich_post_pump(rows):
-    """Historical enrichment only for young, liquid, active memecoin candidates."""
-    shortlist = []
-    for row in rows:
-        age_h = row.get("age_h", 999)
-        v24 = row.get("v24", 0)
-        liq = row.get("liquidity", 0)
-        if 24 <= age_h <= 168 and v24 >= max(3_000, liq * 0.015) and row.get("pair"):
-            shortlist.append(row)
+def _live_review(pair):
+    p = dex_pair(pair)
+    ch = p.get("priceChange") or {}
+    vol = p.get("volume") or {}
+    tx = p.get("txns") or {}
+    liq = float((p.get("liquidity") or {}).get("usd") or 0)
+    price = float(p.get("priceUsd") or 0)
+    h1 = float(ch.get("h1") or 0)
+    h6 = float(ch.get("h6") or 0)
+    h24 = float(ch.get("h24") or 0)
+    v1 = float(vol.get("h1") or 0)
+    v24 = float(vol.get("h24") or 0)
+    t1 = tx.get("h1") or {}
+    buys = int(t1.get("buys") or 0)
+    sells = int(t1.get("sells") or 0)
+    total_tx = buys + sells
+    buy_ratio = safe_div(buys, total_tx, 0.5)
+    vol_liq = safe_div(v1, liq, 0)
 
-    def one(row):
-        try:
-            profile = post_pump_profile(row["pair"], row["age_h"])
-            if profile:
-                row = dict(row)
-                row.update(profile)
-                return row
-        except Exception:
-            pass
-        return None
+    directional = clamp(
+        0.42 * abs(h1) / 40 +
+        0.28 * abs(h6) / 80 +
+        0.20 * abs(h24) / 150 +
+        0.10 * abs(buy_ratio - 0.5) / 0.5, 0, 1
+    )
+    activity = score01(math.log1p(total_tx) / math.log1p(1000))
+    liquidity_quality = score01(math.log1p(max(liq, 0)) / math.log1p(2_000_000))
+    fee_potential = score01(math.log1p(max(vol_liq, 0)) / math.log1p(20))
+    risk_score = clamp(100 * (
+        0.48 * directional +
+        0.22 * (1 - liquidity_quality) +
+        0.18 * score01(abs(h1) / 40) +
+        0.12 * abs(buy_ratio - 0.5) / 0.5
+    ), 0, 100)
 
-    out = []
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(one, r) for r in shortlist[:80]]
-        for f in as_completed(futures):
-            item = f.result()
-            if item:
-                out.append(item)
-    return out
+    if abs(h1) >= 20 or abs(h6) >= 50:
+        regime = "HIGH_VOLATILITY"
+    elif abs(h1) >= 8 or abs(h6) >= 20:
+        regime = "MOMENTUM"
+    elif abs(h1) <= 3 and abs(h6) <= 10:
+        regime = "QUIET"
+    else:
+        regime = "NORMAL"
+
+    range_plan = _live_range(price, h1, h6, h24)
+    out_proxy = clamp(
+        0.45 * abs(h1) / 100 +
+        0.35 * abs(h6) / 100 +
+        0.20 * abs(h24) / 100, 0, 0.95
+    )
+    rebalance = out_proxy >= 0.30 or risk_score >= 60
+    urgency = "HIGH" if out_proxy >= 0.50 or risk_score >= 75 else "MEDIUM" if rebalance else "NONE"
+
+    return {
+        "price": price,
+        "regime": regime,
+        "confidence": "LIVE",
+        "data_source": "DexScreener",
+        "pair": p.get("pairAddress"),
+        "token": (p.get("baseToken") or {}).get("address"),
+        "dex": p.get("dexId"),
+        "math": {
+            "price": price,
+            "atr": None,
+            "atr_pct": None,
+            "volatility": None,
+            "volatility_ratio": None,
+            "z_score": None,
+            "trend_strength": None,
+            "volume_pressure": round((buy_ratio - 0.5) * 2, 4),
+            "entropy": None,
+            "liquidity_force": None,
+            "mean_reversion_force": None,
+            "rvol": None,
+        },
+        "live_metrics": {
+            "h1": h1, "h6": h6, "h24": h24,
+            "v1": v1, "v24": v24,
+            "liquidity": liq,
+            "buy_ratio": buy_ratio,
+            "transactions_1h": total_tx,
+            "vol_liq": vol_liq,
+            "price_usd": price,
+        },
+        "range": range_plan,
+        "monte_carlo": None,
+        "risk": {
+            "score": risk_score,
+            "out_of_range": out_proxy,
+            "il_proxy": None,
+            "fee_yield": None,
+            "fee_il_ratio": None,
+            "notes": [
+                "Risk memakai data live DexScreener.",
+                "Historical volatility belum tersedia.",
+                "Monte Carlo ditahan agar tidak memakai data sintetis."
+            ],
+        },
+        "rebalance": {
+            "rebalance": rebalance,
+            "urgency": urgency,
+            "reasons": (
+                ["range live proxy terlalu tertekan"]
+                if out_proxy >= 0.30 else
+                ["directional pressure tinggi"]
+                if risk_score >= 60 else
+                []
+            ),
+        },
+        "history": 0,
+        "bin": None,
+        "bin_note": "Active bin + bin step harus diambil dari metadata pool Meteora sebelum bin ID dihitung.",
+    }
 
 
-def scan(limit=40,only_meteora=False,strategy="balanced"):
-    candidates=[]
+def scan(limit=40, only_meteora=False, strategy="balanced"):
+    """DexScreener-only memecoin scanner. No historical-provider dependency."""
+    candidates = []
     funnel = {
         "discovered": 0, "meme_score": 0, "liquidity": 0, "age_1_7d": 0,
         "active_volume": 0, "history_checked": 0, "history_available": 0,
@@ -468,267 +477,110 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
 
     for p in discovered:
         try:
-            meme_score,_=memecoin_score(p)
+            meme_score, _ = memecoin_score(p)
             if meme_score < 35:
                 continue
             funnel["meme_score"] += 1
-            score,row=rank_pair(p, strategy)
+
+            _, row = rank_pair(p, strategy)
             if row["liquidity"] < 500:
                 continue
             funnel["liquidity"] += 1
-            if 24 <= row.get("age_h", 999) <= 168:
-                funnel["age_1_7d"] += 1
-                if row.get("v24", 0) >= max(3_000, row.get("liquidity", 0) * 0.015):
-                    funnel["active_volume"] += 1
-            row["source"]="DexScreener"
-            if only_meteora and not row["meteora"]:
-                continue
-            candidates.append(row)
-        except Exception:
-            continue
 
-    # Stage 2: prove the candidate is a young (1-7d) memecoin that has
-    # already pumped and still has meaningful post-pump volume.
-    funnel["history_checked"] = sum(1 for r in candidates if 24 <= r.get("age_h", 999) <= 168 and r.get("v24", 0) >= max(3_000, r.get("liquidity", 0) * 0.015))
-    enriched = enrich_post_pump(candidates)
-    funnel["history_available"] = len(enriched)
-    candidates = []
-    enriched_pairs = {x.get("pair") for x in enriched}
-    for row in enriched:
-        if row.get("pump_pct", 0) < 0.30:
-            continue
-        funnel["pump_30pct"] += 1
-        if row.get("volume_persistence", 0) < 0.20:
-            continue
-        funnel["volume_persistence"] += 1
-        if row.get("pump_stage") == "FADE":
-            continue
-        funnel["not_faded"] += 1
-        if row.get("pump_stage") == "RUNAWAY":
-            row["post_pump_score"] *= 0.70
-        row["score"] = clamp(
-            0.68 * row["lp_score"] +
-            0.32 * row["post_pump_score"],
-            0, 100
-        )
-        row["post_pump_edge"] = round(row["post_pump_score"], 2)
-        candidates.append(row)
-
-    # History can be temporarily unavailable. Keep a lower-confidence
-    # CURRENT_24H fallback instead of returning an empty scanner.
-    historical_pairs = {x.get("pair") for x in candidates}
-    for p in discovered:
-        try:
-            meme_score,_ = memecoin_score(p)
-            if meme_score < 35:
-                continue
-            _, row = rank_pair(p, strategy)
             age_h = row.get("age_h", 999)
             h24 = row.get("h24", 0)
-            if not (24 <= age_h <= 168 and h24 >= 30):
+            v24 = row.get("v24", 0)
+            if 24 <= age_h <= 168:
+                funnel["age_1_7d"] += 1
+            if v24 >= max(3_000, row["liquidity"] * 0.015):
+                funnel["active_volume"] += 1
+            if h24 >= 30:
+                funnel["pump_30pct"] += 1
+            # DexScreener has no candle history here. Keep these counters honest.
+            if h24 >= 30 and v24 >= max(3_000, row["liquidity"] * 0.015):
+                funnel["volume_persistence"] += 1
+                funnel["not_faded"] += 1
+
+            if only_meteora and not row["meteora"]:
                 continue
-            if row.get("liquidity", 0) < 500 or row.get("pair") in historical_pairs:
-                continue
+
             row["source"] = "DexScreener"
+            row["history_available"] = False
+            row["data_confidence"] = "LIVE"
             row["pump_pct"] = max(0, h24 / 100)
             row["drawdown_from_peak"] = 0
             row["pump_age_h"] = 0
             row["volume_persistence"] = 0
             row["volume_acceleration"] = 0
-            row["pump_stage"] = "CURRENT_24H"
-            row["post_pump_score"] = clamp(0.55 * row["lp_score"] + 0.45 * meme_score, 0, 100)
+            row["pump_stage"] = "CURRENT_24H" if h24 < 100 else "PUMPED_24H"
+            row["post_pump_score"] = clamp(
+                0.55 * row["lp_score"] + 0.45 * meme_score, 0, 100
+            )
             row["post_pump_edge"] = round(row["post_pump_score"], 2)
-            row["score"] = clamp(0.78 * row["lp_score"] + 0.22 * row["post_pump_score"], 0, 100)
+            row["score"] = clamp(
+                0.78 * row["lp_score"] + 0.22 * row["post_pump_score"], 0, 100
+            )
             candidates.append(row)
-            funnel["fallback_24h"] += 1
         except Exception:
             continue
 
+    funnel["fallback_24h"] = len(candidates)
     funnel["final_before_dedupe"] = len(candidates)
-    by_token={}
+
+    by_token = {}
     for x in candidates:
-        token=x.get("token") or ""
-        key=token or ("pair:"+str(x.get("pair") or ""))
-        old=by_token.get(key)
-        if old is None or (x["score"],x["v1"],x["liquidity"]) > (old["score"],old["v1"],old["liquidity"]):
-            by_token[key]=x
+        token = x.get("token") or ""
+        key = token or ("pair:" + str(x.get("pair") or ""))
+        old = by_token.get(key)
+        if old is None or (x["score"], x["v1"], x["liquidity"]) > (
+            old["score"], old["v1"], old["liquidity"]
+        ):
+            by_token[key] = x
 
     funnel["final"] = len(by_token)
-    rows=sorted(
+    rows = sorted(
         by_token.values(),
-        key=lambda x:(x["lp_score"],x["score"],x["memecoin_score"],x["v1"],x["liquidity"]),
+        key=lambda x: (
+            x["lp_score"], x["score"], x["memecoin_score"],
+            x["v1"], x["liquidity"]
+        ),
         reverse=True
     )[:limit]
 
-    sources=sorted(set(x.get("source","unknown") for x in rows))
     return {
-        "generated_at":int(time.time()),
-        "count":len(rows),
-        "rows":rows,
-        "source":" + ".join(sources) if sources else "none",
-        "filters":{
-            "min_1h_pump_dex":0,
-            "min_1h_volume_usd_dex":0,
-            "min_liquidity_usd_dex":500,
-            "memecoin_score_min":35,
-            "unique_tokens":True,
-            "memecoin_only":True,
-            "age_hours_min":24,
-            "age_hours_max":168,
-            "min_volume_24h_usd":10000,
-            "min_pump_pct":30,
-            "min_volume_persistence":35,
-            "excluded_stage":"FADE",
-            "preferred_stage":"POST_PUMP",
-            "lp_strategy":strategy+"-risk-adjusted",
-            "lp_score_primary":True,
-            "gmgn_enabled":False,
-            "gmgn_mode":"web-reference-only",
-            "only_meteora":only_meteora,
-            "strategy":strategy
+        "generated_at": int(time.time()),
+        "count": len(rows),
+        "rows": rows,
+        "source": "DexScreener" if rows else "none",
+        "filters": {
+            "min_liquidity_usd_dex": 500,
+            "memecoin_score_min": 35,
+            "unique_tokens": True,
+            "memecoin_only": True,
+            "age_hours_min": 24,
+            "age_hours_max": 168,
+            "min_volume_24h_usd": 10000,
+            "min_pump_pct": 30,
+            "historical_provider": False,
+            "gmgn_enabled": False,
+            "gmgn_mode": "web-reference-only",
+            "only_meteora": only_meteora,
+            "strategy": strategy,
         },
-        "funnel": funnel
+        "funnel": funnel,
     }
 
-if __name__=="__main__":
- import argparse
- ap=argparse.ArgumentParser();ap.add_argument("--limit",type=int,default=40);ap.add_argument("--meteora",action="store_true");ap.add_argument("--strategy",choices=["conservative","balanced","aggressive"],default="balanced");a=ap.parse_args()
- print(json.dumps(scan(a.limit,a.meteora,a.strategy),indent=2))
+
+def review_pair(pair_address, fee_apr=0, horizon_bars=24, mc_paths=1500):
+    """Review a pool from live DexScreener data without historical OHLCV."""
+    return _live_review(pair_address)
 
 
-def fetch_ohlcv(pool_address, limit=200):
-    """Fetch review candles from GeckoTerminal, resolving the pool address when needed."""
-    base = "https://api.geckoterminal.com/api/v2"
-    addresses = [str(pool_address).strip()]
-    errors = []
-
-    # DexScreener pairAddress is normally the DEX pool address. If GeckoTerminal
-    # does not recognize it directly, search its indexed pools and retry with
-    # the canonical pool address.
-    try:
-        pool_url = f"{base}/networks/solana/pools/{urllib.parse.quote(addresses[0], safe='')}"
-        data = get_json(pool_url)
-        addr = ((data.get("data") or {}).get("attributes") or {}).get("address")
-        if addr and addr not in addresses:
-            addresses.insert(0, addr)
-    except Exception as exc:
-        errors.append("pool lookup: " + str(exc))
-
-    try:
-        search_url = f"{base}/search/pools?query={urllib.parse.quote(addresses[0], safe='')}"
-        data = get_json(search_url)
-        for item in (data.get("data") or [])[:5]:
-            addr = ((item.get("attributes") or {}).get("address")
-                    or str(item.get("id") or "").split("_", 1)[-1])
-            if addr and addr not in addresses:
-                addresses.append(addr)
-    except Exception as exc:
-        errors.append("pool search: " + str(exc))
-
-    endpoints = []
-    for addr in addresses[:6]:
-        qaddr = urllib.parse.quote(addr, safe='')
-        endpoints.extend([
-            f"{base}/networks/solana/pools/{qaddr}/ohlcv/hour?aggregate=1&limit={min(limit,1000)}&currency=usd",
-            f"{base}/networks/solana/pools/{qaddr}/ohlcv/minute?aggregate=5&limit={min(limit,1000)}&currency=usd",
-        ])
-
-    for url in endpoints:
-        try:
-            data = get_json(url)
-            rows = ((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
-            candles = []
-            for row in rows:
-                if len(row) < 6:
-                    continue
-                ts, open_, high, low, close, volume = row[:6]
-                candles.append({
-                    "timestamp": int(ts),
-                    "open": float(open_),
-                    "high": float(high),
-                    "low": float(low),
-                    "close": float(close),
-                    "volume": float(volume),
-                })
-            if len(candles) >= 8:
-                return list(reversed(candles))
-            errors.append(f"short history: {len(candles)} candles")
-        except Exception as exc:
-            errors.append(str(exc))
-
-    raise RuntimeError(
-        "Riwayat OHLCV GeckoTerminal tidak tersedia untuk pool ini. "
-        + ("Detail: " + errors[-1] if errors else "")
-    )
-
-def review_pair(pool_address, fee_apr=0, horizon_bars=24, mc_paths=1500):
-    from dlmm_lp_engine import Candle, math_engine, classify_regime, range_engine, bootstrap_monte_carlo
-
-    candles_raw = fetch_ohlcv(pool_address, 200)
-    candles = [Candle(**x) for x in candles_raw]
-    metrics = math_engine(candles)
-    regime = classify_regime(metrics)
-    closes = [x.close for x in candles]
-    range_plan = range_engine(metrics, regime, closes)
-    mc = bootstrap_monte_carlo(
-        closes, range_plan.lower_price, range_plan.upper_price,
-        horizon_bars=horizon_bars, paths=mc_paths
-    )
-
-    from dlmm_lp_engine import risk_engine, rebalance_engine
-    risk = risk_engine(metrics, range_plan, mc, fee_apr=fee_apr, horizon_days=max(1, horizon_bars // 24))
-    rebalance = rebalance_engine(metrics, range_plan, mc, regime)
-
-    return {
-        "price": metrics.price,
-        "regime": regime.value,
-        "math": {
-            "price": metrics.price,
-            "atr": metrics.atr,
-            "atr_pct": metrics.atr_pct,
-            "volatility": metrics.volatility,
-            "volatility_ratio": metrics.volatility_ratio,
-            "z_score": metrics.z_score,
-            "trend_strength": metrics.trend_strength,
-            "volume_pressure": metrics.volume_pressure,
-            "entropy": metrics.entropy,
-            "liquidity_force": metrics.liquidity_force,
-            "mean_reversion_force": metrics.mean_reversion_force,
-            "rvol": metrics.rvol,
-        },
-        "range": {
-            "lower": range_plan.lower_price,
-            "center": range_plan.center_price,
-            "upper": range_plan.upper_price,
-            "width_pct": range_plan.width_pct,
-            "multipliers": range_plan.multipliers,
-        },
-        "monte_carlo": {
-            "paths": mc.paths,
-            "horizon_bars": mc.horizon_bars,
-            "p_below": mc.p_below,
-            "p_above": mc.p_above,
-            "p_inside": max(0, 1 - mc.p_out_of_range),
-            "p_out_of_range": mc.p_out_of_range,
-            "expected_terminal_price": mc.expected_terminal_price,
-            "p05": mc.p5,
-            "p50": mc.p50,
-            "p95": mc.p95,
-        },
-        "risk": {
-            "score": risk.risk_score,
-            "out_of_range": risk.probability_out_of_range,
-            "il_proxy": risk.il_proxy,
-            "fee_yield": risk.expected_fee_yield,
-            "fee_il_ratio": risk.fee_to_il_ratio,
-            "notes": risk.notes,
-        },
-        "rebalance": {
-            "rebalance": rebalance.rebalance,
-            "urgency": rebalance.urgency,
-            "reasons": rebalance.reasons,
-        },
-        "history": len(candles),
-        "bin": None,
-        "bin_note": "Active bin + bin step harus diambil dari metadata pool Meteora sebelum bin ID dihitung.",
-    }
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=40)
+    ap.add_argument("--meteora", action="store_true")
+    ap.add_argument("--strategy", choices=["conservative", "balanced", "aggressive"], default="balanced")
+    a = ap.parse_args()
+    print(json.dumps(scan(a.limit, a.meteora, a.strategy), indent=2))
