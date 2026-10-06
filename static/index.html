@@ -183,25 +183,42 @@ function selectPool(i){
 }
 async function review(pair,name){
  $('dashboard').classList.add('hidden'); $('review').style.display='block';
- $('review').innerHTML='<button onclick="back()">← Back to Radar</button><div class="card" style="margin-top:10px">Menghitung Pool Lab untuk <b>'+esc(name)+'</b>…</div>';
- try{const d=await fetch('/api/review?pair='+encodeURIComponent(pair)).then(r=>r.json());if(d.error)throw Error(d.error);renderReview(d,name)}
- catch(e){$('review').innerHTML='<button onclick="back()">← Back</button><div class="card red" style="margin-top:10px">Review gagal: '+esc(e.message)+'</div>'}
+ $('review').innerHTML='<button onclick="back()">← Back to Radar</button><div class="card" style="margin-top:10px">Menganalisis live market <b>'+esc(name)+'</b>…</div>';
+ try{
+  const d=await fetch('/api/review?pair='+encodeURIComponent(pair)).then(r=>r.json());
+  if(d.error)throw Error(d.error);
+  renderReview(d,name);
+ }catch(e){
+  $('review').innerHTML='<button onclick="back()">← Back</button><div class="card red" style="margin-top:10px">Review gagal: '+esc(e.message)+'</div>'
+ }
 }
 function renderReview(d,name){
- const m=d.math,r=d.range,mc=d.monte_carlo,ri=d.risk,rb=d.rebalance;
- const riskCls=ri.score>70?'red':ri.score>45?'yellow':'green';
+ const m=d.math||{},r=d.range||{},ri=d.risk||{},rb=d.rebalance||{};
+ const live=d.confidence==='LIVE';
+ const risk=Number(ri.score||0);
+ const riskCls=risk>70?'red':risk>45?'yellow':'green';
+ const lm=d.live_metrics||{};
+ const metric=(v,s='—')=>v===null||v===undefined?s:String(v);
+ const rangeLower=Number(r.lower||0),rangeUpper=Number(r.upper||0),rangeCenter=Number(r.center||d.price||0);
+ let mcCard;
+ if(live){
+   mcCard='<div class="card"><div class="section-title">MONTE CARLO</div><div class="value yellow">WAITING FOR HISTORY</div><div class="sub" style="margin-top:7px">DexScreener memberi data live pair, tetapi tidak menyediakan candle history yang cukup untuk Monte Carlo yang valid. Jadi probabilitas tidak dibuat-buat.</div></div>';
+ }else{
+   const mc=d.monte_carlo||{};
+   mcCard='<div class="card"><div class="section-title">MONTE CARLO · RANGE SURVIVAL</div><div class="prob"><div>BELOW<h3>'+pct(mc.p_below)+'</h3></div><div>INSIDE<h3 class="green">'+pct(mc.p_inside)+'</h3></div><div>ABOVE<h3>'+pct(mc.p_above)+'</h3></div></div><div class="sub" style="margin-top:12px">P05 '+Number(mc.p05).toPrecision(6)+' · P50 '+Number(mc.p50).toPrecision(6)+' · P95 '+Number(mc.p95).toPrecision(6)+'</div></div>';
+ }
  $('review').innerHTML='<div class="review-shell">'+
  '<div class="review-col">'+
    '<div><button onclick="back()">← Back to Radar</button></div>'+
-   '<div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+Number(d.price).toPrecision(8)+'</div><span class="pill">'+esc(d.regime)+'</span><span class="pill '+riskCls+'">Risk '+ri.score.toFixed(1)+'/100</span><span class="pill">'+(rb.rebalance?'REBALANCE '+rb.urgency:'RANGE HEALTHY')+'</span></div>'+
-   '<div class="card"><div class="section-title">RANGE INTELLIGENCE</div><div class="value">'+r.lower.toPrecision(6)+' → '+r.upper.toPrecision(6)+'</div><div class="sub">center '+r.center.toPrecision(6)+' · width '+pct(r.width_pct)+'</div><div class="rangebox" style="margin-top:9px"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:18%"><span>'+r.lower.toPrecision(5)+'</span></div><div class="marker" style="left:50%"><span>CURRENT '+Number(d.price).toPrecision(5)+'</span></div><div class="marker" style="left:83%"><span>'+r.upper.toPrecision(5)+'</span></div></div></div></div>'+
-   '<div class="card review-stretch"><div class="section-title">MARKET MATH</div><div class="review-scroll"><div class="pulse-row"><span>ATR</span><b>'+m.atr.toPrecision(6)+' ('+pct(m.atr_pct)+')</b></div><div class="pulse-row"><span>Volatility</span><b>'+m.volatility.toFixed(4)+'</b></div><div class="pulse-row"><span>Trend</span><b>'+m.trend_strength.toFixed(3)+'</b></div><div class="pulse-row"><span>Mean reversion</span><b>'+m.mean_reversion_force.toFixed(3)+'</b></div><div class="pulse-row"><span>Volume pressure</span><b>'+m.volume_pressure.toFixed(3)+'</b></div></div></div>'+
+   '<div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+Number(d.price||0).toPrecision(8)+'</div><span class="pill">'+esc(d.regime||'LIVE')+'</span><span class="pill blue">'+esc(d.data_source||'DexScreener')+'</span><span class="pill '+riskCls+'">Risk '+risk.toFixed(1)+'/100</span><span class="pill">'+(rb.rebalance?'REBALANCE '+esc(rb.urgency||'MEDIUM'):'RANGE HEALTHY')+'</span></div>'+
+   '<div class="card"><div class="section-title">RANGE INTELLIGENCE · LIVE PROXY</div><div class="value">'+rangeLower.toPrecision(6)+' → '+rangeUpper.toPrecision(6)+'</div><div class="sub">center '+rangeCenter.toPrecision(6)+' · width '+pct(r.width_pct||0)+'</div><div class="rangebox" style="margin-top:9px"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:18%"><span>'+rangeLower.toPrecision(5)+'</span></div><div class="marker" style="left:50%"><span>CURRENT '+Number(d.price||0).toPrecision(5)+'</span></div><div class="marker" style="left:83%"><span>'+rangeUpper.toPrecision(5)+'</span></div></div></div></div>'+
+   '<div class="card review-stretch"><div class="section-title">DEXSCREENER LIVE DATA</div><div class="review-scroll"><div class="pulse-row"><span>1h change</span><b>'+metric(lm.h1,metric(d.h1, '—'))+'%</b></div><div class="pulse-row"><span>6h change</span><b>'+metric(lm.h6,'—')+'%</b></div><div class="pulse-row"><span>24h change</span><b>'+metric(lm.h24,'—')+'%</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(Number(lm.v1||0))+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(Number(lm.v24||0))+'</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(Number(lm.liquidity||0))+'</b></div><div class="pulse-row"><span>Vol / Liq</span><b>'+Number(lm.vol_liq||0).toFixed(2)+'x</b></div><div class="pulse-row"><span>Buy ratio 1h</span><b>'+pct(lm.buy_ratio||0)+'</b></div></div></div>'+
  '</div>'+
  '<div class="review-col">'+
-   '<div class="card"><div class="section-title">MONTE CARLO · RANGE SURVIVAL</div><div class="prob"><div>BELOW<h3>'+pct(mc.p_below)+'</h3></div><div>INSIDE<h3 class="green">'+pct(mc.p_inside)+'</h3></div><div>ABOVE<h3>'+pct(mc.p_above)+'</h3></div></div><div class="sub" style="margin-top:12px">P05 '+mc.p05.toPrecision(6)+' · P50 '+mc.p50.toPrecision(6)+' · P95 '+mc.p95.toPrecision(6)+'</div></div>'+
-   '<div class="card"><div class="section-title">RISK ENGINE</div><div class="value '+riskCls+'">'+ri.score.toFixed(1)+'</div><div class="sub">Out of range '+pct(ri.out_of_range)+'<br>IL proxy '+pct(ri.il_proxy)+'<br>Fee yield proxy '+pct(ri.fee_yield)+'</div><hr style="border-color:#1b303b;border-width:1px 0 0;margin:10px 0"><div class="small">'+(ri.notes||[]).join(' · ')+'</div></div>'+
-   '<div class="card review-stretch"><div class="section-title">LP DECISION</div><div class="value '+riskCls+'">'+(rb.rebalance?'REBALANCE':'RANGE HEALTHY')+'</div><div class="sub" style="margin-top:7px">Monte Carlo inside: <b>'+pct(mc.p_inside)+'</b><br>Escape probability: <b>'+pct(1-(mc.p_inside||0))+'</b></div><div style="margin-top:14px"><div class="section-title">QUICK READ</div><div class="reason"><span class="dotmini"></span>Regime <b>'+esc(d.regime)+'</b></div><div class="reason"><span class="dotmini"></span>Trend strength <b>'+m.trend_strength.toFixed(3)+'</b></div><div class="reason"><span class="dotmini"></span>Mean reversion <b>'+m.mean_reversion_force.toFixed(3)+'</b></div><div class="reason"><span class="dotmini"></span>Range width <b>'+pct(r.width_pct)+'</b></div></div></div>'+
-   '<div class="card"><div class="section-title">NOTE</div><div class="sub">Monte Carlo adalah probabilitas, bukan prediksi pasti. Untuk DLMM, bin ID tetap membutuhkan metadata pool Meteora yang sebenarnya.</div></div>'+
+   mcCard+
+   '<div class="card"><div class="section-title">RISK ENGINE · LIVE</div><div class="value '+riskCls+'">'+risk.toFixed(1)+'</div><div class="sub">Out-of-range proxy '+pct(ri.out_of_range||0)+'<br>IL proxy '+(ri.il_proxy==null?'N/A':pct(ri.il_proxy))+'<br>Fee yield proxy '+(ri.fee_yield==null?'N/A':pct(ri.fee_yield))+'</div><hr style="border-color:#1b303b;border-width:1px 0 0;margin:10px 0"><div class="small">'+(ri.notes||[]).map(esc).join(' · ')+'</div></div>'+
+   '<div class="card review-stretch"><div class="section-title">LP DECISION</div><div class="value '+riskCls+'">'+(rb.rebalance?'REBALANCE':'RANGE HEALTHY')+'</div><div class="sub" style="margin-top:7px">Confidence: <b>'+esc(d.confidence||'LIVE')+'</b><br>Data source: <b>'+esc(d.data_source||'DexScreener')+'</b><br>Escape proxy: <b>'+pct(ri.out_of_range||0)+'</b></div><div style="margin-top:14px"><div class="section-title">QUICK READ</div><div class="reason"><span class="dotmini"></span>Regime <b>'+esc(d.regime||'—')+'</b></div><div class="reason"><span class="dotmini"></span>1h move <b>'+Number(lm.h1||0).toFixed(1)+'%</b></div><div class="reason"><span class="dotmini"></span>6h move <b>'+Number(lm.h6||0).toFixed(1)+'%</b></div><div class="reason"><span class="dotmini"></span>Range width <b>'+pct(r.width_pct||0)+'</b></div></div></div>'+
+   '<div class="card"><div class="section-title">NOTE</div><div class="sub">Review sekarang sengaja memakai DexScreener sebagai sumber tunggal. Monte Carlo tidak dijalankan tanpa historical candles, supaya angka probabilitas tetap jujur.</div></div>'+
  '</div></div>';
 }
 function back(){$('review').style.display='none';$('dashboard').classList.remove('hidden');}
