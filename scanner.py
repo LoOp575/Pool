@@ -1,6 +1,7 @@
 """Pump-to-DLMM opportunity scanner. Stdlib only."""
 from __future__ import annotations
 import json, math, time, urllib.request, urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=8
 import os
@@ -82,33 +83,34 @@ def rank_pair(p):
       "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"}, "token":(p.get("baseToken") or {}).get("address"), "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))}
 
 def fetch_search_pairs():
-    """Direct broad pair discovery; avoids token->pairs request fan-out."""
+    """Fast broad discovery. Search calls run concurrently to avoid Vercel timeouts."""
     pairs={}
-    queries=["SOL","USDC","USDT","pump","meme","pepe","dog","cat","ai","inu","moon","bonk","wif"]
-    for q in queries:
+    queries=["SOL","USDC","pump","meme","pepe","dog","cat","ai","inu","bonk","wif"]
+
+    def one(q):
         try:
             data=get_json(DEX_URL+"/latest/dex/search?"+urllib.parse.urlencode({"q":q}))
-            for p in (data.get("pairs") or []) if isinstance(data,dict) else []:
-                if p.get("chainId") != "solana":
-                    continue
-                addr=p.get("pairAddress")
-                if addr:
-                    pairs[addr]=p
+            return data.get("pairs") or []
         except Exception:
-            continue
+            return []
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures=[pool.submit(one,q) for q in queries]
+        for f in as_completed(futures):
+            for p in f.result():
+                if p.get("chainId")=="solana" and p.get("pairAddress"):
+                    pairs[p["pairAddress"]]=p
     return list(pairs.values())
 
 
 def scan(limit=40,only_meteora=False):
     candidates=[]
-
-    # Primary discovery: process DexScreener search results directly.
+    # Keep the hot path to one discovery stage. The old token->pairs fan-out
+    # could trigger dozens of HTTP requests and hit Vercel execution limits.
     for p in fetch_search_pairs():
         try:
             score,row=rank_pair(p)
-            # Discovery gate is intentionally very permissive. Ranking does the
-            # heavy lifting; this gate only removes completely dead pools.
-            if row["liquidity"] < 500 or (row["v1"] < 100 and row["h1"] == 0):
+            if row["liquidity"] < 500:
                 continue
             row["source"]="DexScreener"
             if only_meteora and not row["meteora"]:
@@ -116,26 +118,6 @@ def scan(limit=40,only_meteora=False):
             candidates.append(row)
         except Exception:
             continue
-
-    # Secondary discovery from profiles/boosts.
-    seen={x.get("pair") for x in candidates if x.get("pair")}
-    for seed in fetch_seed_tokens():
-        for p in fetch_pairs(seed.get("tokenAddress")):
-            if p.get("chainId")!="solana":
-                continue
-            try:
-                score,row=rank_pair(p)
-                if row["liquidity"] < 500:
-                    continue
-                if row.get("pair") in seen:
-                    continue
-                row["source"]="DexScreener"
-                if only_meteora and not row["meteora"]:
-                    continue
-                candidates.append(row)
-                seen.add(row.get("pair"))
-            except Exception:
-                continue
 
     dedup={}
     for x in candidates:
@@ -157,7 +139,7 @@ def scan(limit=40,only_meteora=False):
         "source":" + ".join(sources) if sources else "none",
         "filters":{
             "min_1h_pump_dex":0,
-            "min_1h_volume_usd_dex":100,
+            "min_1h_volume_usd_dex":0,
             "min_liquidity_usd_dex":500,
             "gmgn_enabled":False,
             "gmgn_mode":"web-reference-only",
