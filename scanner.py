@@ -2,7 +2,8 @@
 from __future__ import annotations
 import json, math, time, urllib.request, urllib.parse
 
-UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=8\nimport os, uuid
+UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=8
+import os
 
 GMGN_WEB_URL="https://gmgn.ai/sol/token/"
 
