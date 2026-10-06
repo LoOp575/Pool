@@ -140,9 +140,9 @@ function render(d){
 
  const f=d.funnel||{};
  const funnelItems=[
-  ['FOUND',f.discovered],['MEME',f.meme_score],['1–7D',f.age_1_7d],
-  ['VOL',f.active_volume],['HISTORY',f.history_available],['PUMP ≥30%',f.pump_30pct],
-  ['VOL LIFE',f.volume_persistence],['NOT FADE',f.not_faded],['FINAL',f.final]
+  ['FOUND',f.discovered],['MEME',f.meme_score],['0.5–7D',f.age_1_7d],
+  ['VOL',f.active_volume],['IGNITION',f.ignition],['FRESH',f.fresh_qualified],
+  ['NOT RUNAWAY',f.not_runaway],['PUMP ≥30%',f.pump_30pct],['FINAL',f.final]
  ];
  $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('');
  
