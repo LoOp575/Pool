@@ -22,6 +22,9 @@ def pct(x):return float(x or 0)
 def score01(x):return clamp(float(x),0,1)
 def safe_div(a,b,d=0):return a/b if b else d
 
+FORMULA_ENGINE_VERSION = "POOL-INTEL-1"
+
+
 def fetch_seed_tokens():
     """Broad Solana discovery using documented public DexScreener endpoints."""
     out={}
@@ -235,7 +238,20 @@ def fresh_entry_score(p, meme_score, age_h, h1, h6, h24, v1, v24, liq, txns, buy
     if age_h < 0.5 or age_h > 168:
         return 0, ["outside fresh window"]
 
-    freshness = 1.0 if age_h <= 24 else 1 - 0.35 * ((age_h - 24) / 144)
+    # Main LP discovery zone is 1-3 days. Very young launches remain
+    # eligible, but they do not receive the same freshness bonus.
+    if age_h < 6:
+        freshness = 0.60
+    elif age_h < 24:
+        freshness = 0.60 + 0.25 * ((age_h - 6) / 18)
+    elif age_h <= 48:
+        freshness = 1.00
+    elif age_h <= 72:
+        freshness = 0.90
+    elif age_h <= 96:
+        freshness = 0.65
+    else:
+        freshness = 0.65 * (1 - ((age_h - 96) / 72))
     freshness = clamp(freshness, 0, 1)
 
     v1_liq = safe_div(v1, max(liq, 1), 0)
@@ -401,8 +417,31 @@ def _live_range(price, h1, h6, h24):
     }
 
 
+def _live_analysis(p, strategy="balanced"):
+    """Run the same custom formulas on the live candidate snapshot."""
+    discovery_score, row = rank_pair(p, strategy)
+    return {
+        "formula_engine": FORMULA_ENGINE_VERSION,
+        "mode": "LIVE_SNAPSHOT",
+        "score": round(discovery_score, 2),
+        "fresh_score": round(row["fresh_score"], 2),
+        "lp_score": round(row["lp_score"], 2),
+        "meme_score": round(row["memecoin_score"], 2),
+        "lp_components": row["lp_components"],
+        "fresh_reasons": row["fresh_reasons"],
+        "meme_reasons": row["meme_reasons"],
+        "history_required": [
+            "ATR", "volatility", "volatility_ratio", "z_score",
+            "trend_strength", "entropy", "mean_reversion_force",
+            "Monte Carlo", "probability_out_of_range"
+        ],
+        "prediction_status": "WAITING_FOR_REAL_CANDLES",
+    }, row
+
+
 def _live_review(pair):
     p = dex_pair(pair)
+    analysis, row = _live_analysis(p)
     ch = p.get("priceChange") or {}
     vol = p.get("volume") or {}
     tx = p.get("txns") or {}
@@ -456,7 +495,9 @@ def _live_review(pair):
 
     return {
         "price": price,
+        "formula_engine": FORMULA_ENGINE_VERSION,
         "regime": regime,
+        "analysis": analysis,
         "confidence": "LIVE",
         "data_source": "DexScreener",
         "pair": p.get("pairAddress"),
@@ -511,6 +552,7 @@ def _live_review(pair):
             ),
         },
         "history": 0,
+        "history_status": "NO_REAL_OHLCV",
         "bin": None,
         "bin_note": "Active bin + bin step harus diambil dari metadata pool Meteora sebelum bin ID dihitung.",
     }
