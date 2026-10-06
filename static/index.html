@@ -80,7 +80,7 @@ hr{border-color:var(--line)!important}
  </div>
 
  <div class="card">
-  <div class="section-title">TARGET SCANNER <span class="muted">· volume + pump · click row</span></div>
+  <div class="section-title">TARGET SCANNER <span class="muted">· DexScreener flow · click row</span></div>
   <div style="overflow:auto;max-height:285px">
   <table><thead><tr><th>TOKEN</th><th>AGE</th><th>VOL 24H</th><th>BUY 1H</th><th>SELL 1H</th><th>AGE BAND</th></tr></thead>
   <tbody id="rows"></tbody></table></div>
@@ -140,7 +140,7 @@ function render(d){
 
  const f=d.funnel||{}, dd=f.discovery||{};
  const funnelItems=[
-  ['FOUND',f.discovered],['SOLANA',f.solana],['AGE',f.age],
+  ['FOUND',f.discovered],['SOLANA',f.solana],['TOKEN DATA',f.token_data],['AGE',f.age],
   ['VOLUME',f.volume],['BUY/SELL',f.activity],['FINAL',f.final]
  ];
  const discoveryLine='SEARCH '+Number(dd.search_pairs_raw||0)+' · SOLANA '+Number(dd.solana_pairs||0);
@@ -150,7 +150,7 @@ function render(d){
  if(!rows.length){
    $('status').textContent=d.discovery_status==='NO_SOLANA_PAIRS'
      ? 'DexScreener tidak mengembalikan pair Solana. Cek DISCOVERY.'
-     : 'Pair ditemukan, tetapi tidak lolos filter memecoin / age / volume / buy-sell.';
+     : 'Pair ditemukan, tetapi tidak lolos filter age / volume / buy-sell.';
  }
 
  $('pFee').textContent=rows.length?'LIVE':'—';
