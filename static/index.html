@@ -77,7 +77,7 @@ hr{border-color:var(--line)!important}
  <div class="card">
   <div class="section-title">TOP LP OPPORTUNITIES <span class="muted">· click row</span></div>
   <div style="overflow:auto;max-height:285px">
-  <table><thead><tr><th>TOKEN</th><th>LP</th><th>MEME</th><th>VOL/LIQ</th><th>1H</th><th>STATUS</th></tr></thead>
+  <table><thead><tr><th>TOKEN</th><th>LP</th><th>PUMP</th><th>VOL/LIQ</th><th>24H</th><th>STAGE</th></tr></thead>
   <tbody id="rows"></tbody></table></div>
  </div>
 
@@ -144,7 +144,7 @@ function render(d){
 
  $('rows').innerHTML=rows.map((x,i)=>{
    const [st,sc]=statusOf(x);
-   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.dex||'—')+'</div></td><td><b class="'+scoreClass(x.lp_score)+'">'+x.lp_score.toFixed(1)+'</b></td><td>'+x.memecoin_score.toFixed(0)+'</td><td>'+x.vol_liq.toFixed(1)+'x</td><td class="'+(x.h1>=0?'green':'red')+'">'+x.h1.toFixed(1)+'%</td><td><span class="pill '+sc+'">'+st+'</span></td></tr>'
+   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.dex||'—')+' · '+(x.age_h/24).toFixed(1)+'d</div></td><td><b class="'+scoreClass(x.lp_score)+'">'+x.lp_score.toFixed(1)+'</b></td><td class="'+(x.pump_pct>=1?'green':x.pump_pct>=0.3?'yellow':'red')+'">+'+(100*(x.pump_pct||0)).toFixed(0)+'%</td><td>'+x.vol_liq.toFixed(1)+'x</td><td class="'+(x.h24>=0?'green':'red')+'">'+x.h24.toFixed(1)+'%</td><td><span class="pill '+(x.pump_stage==='POST_PUMP'?'green':x.pump_stage==='FADE'||x.pump_stage==='RUNAWAY'?'yellow':sc)+'">'+esc((x.pump_stage||st).replace('_',' '))+'</span></td></tr>'
  }).join('')||'<tr><td colspan="6" class="empty">Tidak ada kandidat.</td></tr>';
 
  $('heat').innerHTML='<div>TOKEN</div><div>FEE</div><div>RANGE</div><div>RISK</div>'+rows.slice(0,8).map(x=>{
@@ -163,9 +163,9 @@ function render(d){
 function selectPool(i){
  if(!DATA?.rows?.[i])return; selected=DATA.rows[i];
  const x=selected, c=x.lp_components||{}, risk=100-(c.directional_safety||50), [st,sc]=statusOf(x);
- $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill '+sc+'">'+st+'</span><span class="pill">LP '+x.lp_score.toFixed(1)+'</span><span class="pill">MEME '+x.memecoin_score.toFixed(0)+'</span></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(x.v1)+'</b></div><div class="pulse-row"><span>Vol/Liq</span><b>'+x.vol_liq.toFixed(1)+'x</b></div><div class="pulse-row"><span>Buy pressure</span><b>'+pct(x.buy_ratio)+'</b></div>';
+ $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill '+sc+'">'+st+'</span><span class="pill">LP '+x.lp_score.toFixed(1)+'</span><span class="pill">'+esc((x.pump_stage||'—').replace('_',' '))+'</span></div><div class="pulse-row"><span>Age</span><b>'+(x.age_h/24).toFixed(1)+'d</b></div><div class="pulse-row"><span>Peak pump</span><b class="green">+'+(100*(x.pump_pct||0)).toFixed(0)+'%</b></div><div class="pulse-row"><span>Drawdown</span><b>'+pct(x.drawdown_from_peak||0)+'</b></div><div class="pulse-row"><span>Post-pump volume</span><b>'+((x.volume_persistence||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Recent volume accel.</span><b>'+((x.volume_acceleration||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.v24)+'</b></div>';
  $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Fee potential <b>'+Number(c.fee_potential||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Range quality <b>'+Number(c.range_quality_proxy||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Liquidity quality <b>'+Number(c.liquidity_quality||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Activity <b>'+Number(c.activity||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Directional safety <b>'+Number(c.directional_safety||0).toFixed(0)+'</b></div>';
- $('riskSnap').innerHTML='<b class="'+(risk>55?'red':risk>30?'yellow':'green')+'">Directional risk '+risk.toFixed(0)+'/100</b><br>5m '+x.m5.toFixed(1)+'% · 1h '+x.h1.toFixed(1)+'% · 24h '+x.h24.toFixed(1)+'%<br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
+ $('riskSnap').innerHTML='<b class="'+(risk>55?'red':risk>30?'yellow':'green')+'">Directional risk '+risk.toFixed(0)+'/100</b><br>Stage <b>'+esc(x.pump_stage||'—')+'</b> · Pump +'+(100*(x.pump_pct||0)).toFixed(0)+'% · peak '+(x.pump_age_h||0).toFixed(0)+'h lalu<br>Volume persistence <b>'+((x.volume_persistence||0).toFixed(2))+'x</b> · accel <b>'+((x.volume_acceleration||0).toFixed(2))+'x</b><br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
  $('selected').onclick=()=>review(x.pair,(x.base||'?')+' / '+(x.quote||'?'));
 }
 async function review(pair,name){
