@@ -140,10 +140,10 @@ function render(d){
 
  const f=d.funnel||{}, dd=f.discovery||{};
  const funnelItems=[
-  ['FOUND',f.discovered],['MEMECOIN',f.memecoin],['AGE',f.age],
+  ['FOUND',f.discovered],['SOLANA',f.solana],['AGE',f.age],
   ['VOLUME',f.volume],['BUY/SELL',f.activity],['FINAL',f.final]
  ];
- const discoveryLine='SEARCH '+Number(dd.search_pairs_raw||0)+' · SEED '+Number(dd.seed_tokens||0)+' · EXPAND '+Number(dd.pair_expansion_pairs||0)+' · SOLANA '+Number(dd.solana_pairs||0);
+ const discoveryLine='SEARCH '+Number(dd.search_pairs_raw||0)+' · SOLANA '+Number(dd.solana_pairs||0);
  const discoveryErrors=(dd.errors||[]).length;
  $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('')
    +'<span style="flex-basis:100%;border-top:1px solid var(--line);padding-top:6px"><b>DISCOVERY</b> <span class="muted">'+discoveryLine+(discoveryErrors?' · ERR '+discoveryErrors:'')+'</span></span>';
