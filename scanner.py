@@ -312,6 +312,149 @@ def fetch_search_pairs():
     return list(pairs.values())
 
 
+def fetch_hourly_ohlcv(pool_address, limit=200):
+    """Fetch hourly OHLCV so 1-7 day pump history can be measured."""
+    base = "https://api.geckoterminal.com/api/v2/networks/solana/pools/"
+    url = f"{base}{urllib.parse.quote(pool_address, safe='')}/ohlcv/hour?aggregate=1&limit={min(limit,1000)}"
+    data = get_json(url)
+    rows = ((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+    candles = []
+    for row in rows:
+        if len(row) < 6:
+            continue
+        ts, open_, high, low, close, volume = row[:6]
+        candles.append({
+            "timestamp": int(ts),
+            "open": float(open_),
+            "high": float(high),
+            "low": float(low),
+            "close": float(close),
+            "volume": float(volume),
+        })
+    return list(reversed(candles))
+
+
+def post_pump_profile(pool_address, age_h):
+    """
+    Historical candidate profile for young memecoins:
+    - pump_pct: largest gain from an earlier local low to a later peak
+    - drawdown_pct: current drawdown from that peak
+    - volume_persistence: post-peak hourly volume vs pre-pump baseline
+    - volume_acceleration: recent hourly volume vs earlier baseline
+    """
+    candles = fetch_hourly_ohlcv(pool_address, 200)
+    if len(candles) < 24:
+        return None
+
+    closes = [max(float(c["close"]), 0) for c in candles]
+    vols = [max(float(c["volume"]), 0) for c in candles]
+    if not closes or closes[0] <= 0:
+        return None
+
+    current = closes[-1]
+    peak_i = 0
+    pump_pct = 0.0
+    pre_low = closes[0]
+    for i in range(1, len(closes)):
+        if closes[i] > 0 and pre_low > 0:
+            gain = closes[i] / pre_low - 1
+            if gain > pump_pct and i >= 6:
+                pump_pct = gain
+                peak_i = i
+        pre_low = min(pre_low, closes[i])
+
+    peak = max(closes[peak_i], 1e-18)
+    drawdown = max(0.0, 1 - current / peak)
+
+    pre_start = max(0, peak_i - 24)
+    pre_vols = vols[pre_start:peak_i] or vols[:max(1, peak_i)]
+    post_vols = vols[peak_i + 1:] or vols[-12:]
+    pre_avg = sum(pre_vols) / max(len(pre_vols), 1)
+    post_avg = sum(post_vols) / max(len(post_vols), 1)
+    recent = vols[-6:]
+    recent_avg = sum(recent) / max(len(recent), 1)
+    earlier = vols[-24:-6] or vols[:-6] or recent
+    earlier_avg = sum(earlier) / max(len(earlier), 1)
+
+    persistence = safe_div(post_avg, pre_avg, 0)
+    acceleration = safe_div(recent_avg, earlier_avg, 0)
+    peak_age_h = max(0.0, (candles[-1]["timestamp"] - candles[peak_i]["timestamp"]) / 3600)
+
+    # LP sweet spot: the pump already happened, price has cooled enough to
+    # reduce runaway range risk, but trading activity has not disappeared.
+    if pump_pct < 0.30:
+        stage = "NO_PUMP"
+    elif peak_age_h < 3 and drawdown < 0.12:
+        stage = "RUNAWAY"
+    elif persistence < 0.35 and acceleration < 0.55:
+        stage = "FADE"
+    elif drawdown >= 0.05 and drawdown <= 0.45 and persistence >= 0.55:
+        stage = "POST_PUMP"
+    else:
+        stage = "PUMPED"
+
+    # Reward the +100% to +500% zone, but don't make it a hard gate.
+    pump_quality = (
+        score01(pump_pct / 1.0) if pump_pct <= 1.0 else
+        score01(1 - max(pump_pct - 5.0, 0) / 10.0)
+    )
+    sweet_spot = 1.0 if 1.0 <= pump_pct <= 5.0 else score01(1 - abs(pump_pct - 2.5) / 5.0)
+    volume_life = score01(persistence / 1.5)
+    recent_activity = score01(acceleration / 1.5)
+    consolidation = score01(1 - max(drawdown - 0.45, 0) / 0.55) * (1 - score01(max(0.05 - drawdown, 0) / 0.05))
+    post_pump_score = 100 * (
+        0.28 * pump_quality +
+        0.15 * sweet_spot +
+        0.28 * volume_life +
+        0.14 * recent_activity +
+        0.15 * consolidation
+    )
+
+    return {
+        "age_h": age_h,
+        "pump_pct": pump_pct,
+        "pump_peak_price": peak,
+        "drawdown_from_peak": drawdown,
+        "pump_age_h": peak_age_h,
+        "volume_persistence": persistence,
+        "volume_acceleration": acceleration,
+        "pump_stage": stage,
+        "post_pump_score": clamp(post_pump_score, 0, 100),
+        "history_bars": len(candles),
+    }
+
+
+def enrich_post_pump(rows):
+    """Historical enrichment only for young, liquid, active memecoin candidates."""
+    shortlist = []
+    for row in rows:
+        age_h = row.get("age_h", 999)
+        v24 = row.get("v24", 0)
+        liq = row.get("liquidity", 0)
+        if 24 <= age_h <= 168 and v24 >= max(10_000, liq * 0.05) and row.get("pair"):
+            shortlist.append(row)
+
+    def one(row):
+        try:
+            profile = post_pump_profile(row["pair"], row["age_h"])
+            if profile:
+                row = dict(row)
+                row.update(profile)
+                return row
+        except Exception:
+            pass
+        return None
+
+    out = []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(one, r) for r in shortlist[:80]]
+        for f in as_completed(futures):
+            item = f.result()
+            if item:
+                out.append(item)
+    return out
+
+
 def scan(limit=40,only_meteora=False,strategy="balanced"):
     candidates=[]
 
@@ -329,6 +472,29 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
             candidates.append(row)
         except Exception:
             continue
+
+    # Stage 2: prove the candidate is a young (1-7d) memecoin that has
+    # already pumped and still has meaningful post-pump volume.
+    enriched = enrich_post_pump(candidates)
+    candidates = []
+    for row in enriched:
+        if row.get("pump_pct", 0) < 0.30:
+            continue
+        if row.get("volume_persistence", 0) < 0.35:
+            continue
+        if row.get("pump_stage") == "FADE":
+            continue
+        if row.get("pump_stage") == "RUNAWAY":
+            # Keep it visible, but penalize it because concentrated LP is
+            # vulnerable while price is still escaping upward.
+            row["post_pump_score"] *= 0.70
+        row["score"] = clamp(
+            0.68 * row["lp_score"] +
+            0.32 * row["post_pump_score"],
+            0, 100
+        )
+        row["post_pump_edge"] = round(row["post_pump_score"], 2)
+        candidates.append(row)
 
     by_token={}
     for x in candidates:
@@ -357,6 +523,13 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
             "memecoin_score_min":35,
             "unique_tokens":True,
             "memecoin_only":True,
+            "age_hours_min":24,
+            "age_hours_max":168,
+            "min_volume_24h_usd":10000,
+            "min_pump_pct":30,
+            "min_volume_persistence":35,
+            "excluded_stage":"FADE",
+            "preferred_stage":"POST_PUMP",
             "lp_strategy":strategy+"-risk-adjusted",
             "lp_score_primary":True,
             "gmgn_enabled":False,
