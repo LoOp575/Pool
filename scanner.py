@@ -27,31 +27,31 @@ FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
 
 
 def fetch_seed_tokens():
-    """Discover Solana tokens from DexScreener public feeds only.
-
-    No keyword search is used. The scanner gets token addresses from the
-    same broad boost feeds used by Tool-Trade, then resolves live pairs.
-    """
+    """Discover Solana tokens from DexScreener public feeds, no keyword search."""
     out={}
-    for path in ("/token-boosts/latest/v1", "/token-boosts/top/v1"):
+    paths=(
+        "/token-boosts/latest/v1",
+        "/token-boosts/top/v1",
+        "/token-profiles/latest/v1",
+    )
+    for path in paths:
         try:
             data=get_json(DEX_URL+path)
             for item in data if isinstance(data,list) else []:
                 if item.get("chainId")=="solana" and item.get("tokenAddress"):
-                    out[str(item["tokenAddress"])]={
-                        "chainId":"solana",
-                        "tokenAddress":str(item["tokenAddress"])
-                    }
+                    token=str(item["tokenAddress"])
+                    out[token]={"chainId":"solana","tokenAddress":token}
         except Exception:
             pass
     return list(out.values())
 
 
 def fetch_pairs_batch(tokens):
-    """Resolve live pairs in DexScreener token batches, max 30 addresses."""
+    """Resolve live Solana pairs from DexScreener token endpoints."""
     if not tokens:
-        return []
+        return [], 0
     all_pairs=[]
+    failed_batches=0
     for i in range(0, len(tokens), 30):
         batch=tokens[i:i+30]
         addresses=",".join(t["tokenAddress"] for t in batch)
@@ -62,12 +62,29 @@ def fetch_pairs_batch(tokens):
             if isinstance(data,dict):
                 all_pairs.extend(data.get("pairs") or [])
         except Exception:
-            continue
-    return all_pairs
+            failed_batches += 1
+    return all_pairs, failed_batches
 
-def fetch_pairs(token):
-    try:return get_json(f"{DEX_URL}/token-pairs/v1/solana/{urllib.parse.quote(token,safe='')}") or []
-    except Exception:return []
+
+def fetch_pairs_fallback(tokens):
+    """Per-token DexScreener fallback when the batch endpoint is empty/fails."""
+    if not tokens:
+        return []
+    out=[]
+    def one(token):
+        try:
+            return get_json(
+                DEX_URL+"/token-pairs/v1/solana/"+
+                urllib.parse.quote(token["tokenAddress"],safe="")
+            )
+        except Exception:
+            return []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for data in pool.map(one,tokens[:64]):
+            if isinstance(data,list):
+                out.extend(data)
+    return out
+
 
 def continuation_score(price_change,volume,liquidity,txns,buys,sells,age_h,price_change_5m=0):
     pump=score01((price_change-.12)/1.20)
@@ -345,34 +362,43 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """DexScreener-only broad discovery, without keyword queries."""
-    diag = {
-        "search_queries_total": 0,
-        "search_queries_ok": 0,
-        "search_pairs_raw": 0,
-        "feed_tokens": 0,
-        "expanded_tokens": 0,
-        "expanded_pairs": 0,
-        "solana_pairs": 0,
-        "errors": [],
+    """DexScreener discovery pipeline. Never searches by coin name/keyword."""
+    diag={
+        "search_queries_total":0,
+        "search_queries_ok":0,
+        "search_pairs_raw":0,
+        "feed_tokens":0,
+        "expanded_tokens":0,
+        "expanded_pairs":0,
+        "fallback_pairs":0,
+        "solana_pairs":0,
+        "errors":[],
     }
     tokens=fetch_seed_tokens()
     diag["feed_tokens"]=len(tokens)
     diag["expanded_tokens"]=len(tokens)
-    pairs=fetch_pairs_batch(tokens)
+
+    pairs,failed_batches=fetch_pairs_batch(tokens)
     diag["expanded_pairs"]=len(pairs)
+    if failed_batches:
+        diag["errors"].append({
+            "stage":"token-batch",
+            "error":f"{failed_batches} batch request(s) failed"
+        })
+
+    # Still DexScreener, but use its per-token pair endpoint as a safety net.
+    if not pairs:
+        fallback=fetch_pairs_fallback(tokens)
+        diag["fallback_pairs"]=len(fallback)
+        pairs.extend(fallback)
 
     out={}
     for p in pairs:
-        if (
-            isinstance(p,dict)
-            and p.get("chainId")=="solana"
-            and p.get("pairAddress")
-        ):
+        if isinstance(p,dict) and p.get("chainId")=="solana" and p.get("pairAddress"):
             out[p["pairAddress"]]=p
-
     diag["solana_pairs"]=len(out)
-    return list(out.values()), diag
+    return list(out.values()),diag
+
 
 def _poisson_sample(rng, lam):
     """Exact Poisson sampler for the Merton jump-count process."""
