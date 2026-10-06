@@ -334,11 +334,10 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """Fast meme-coin discovery from live DexScreener search results.
+    """Fetch meme-coin candidates directly from DexScreener.
 
-    Discovery is deliberately query-driven because DexScreener search returns
-    the live pair metrics needed by the scanner. No token-by-token expansion
-    is used here, so the radar stays bounded for Vercel/serverless.
+    This is discovery only. It does not score LP quality, predict price,
+    run Monte Carlo, or decide whether a token is a good position.
     """
     pairs = {}
     diag = {
@@ -349,25 +348,12 @@ def fetch_search_pairs():
         "errors": [],
     }
 
-    def record_error(stage, detail):
-        if len(diag["errors"]) < 12:
-            diag["errors"].append({"stage": stage, "error": str(detail)[:180]})
-
     def add_pair(p):
         if not isinstance(p, dict) or p.get("chainId") != "solana":
             return
         address = p.get("pairAddress")
         if address:
             pairs[address] = p
-
-    # Meme-oriented queries plus one broad Solana query. DexScreener search
-    # returns pair metrics directly, so the scanner can filter without a
-    # second network request for every token.
-    queries = [
-        "pump", "meme", "pepe", "doge", "bonk",
-        "wif", "cat", "inu", "frog", "SOL",
-    ]
-    diag["search_queries_total"] = len(queries)
 
     def search(q):
         try:
@@ -379,21 +365,35 @@ def fetch_search_pairs():
         except Exception as exc:
             return q, exc
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    # DexScreener is the radar. These queries are only discovery keywords.
+    # The returned pair already contains price, volume, txns, liquidity and
+    # price-change data which the dashboard can display.
+    queries = [
+        "meme", "pump", "pepe", "doge", "bonk",
+        "wif", "cat", "inu", "frog", "popcat",
+    ]
+    diag["search_queries_total"] = len(queries)
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
         for q, data in pool.map(search, queries):
             if isinstance(data, Exception):
-                record_error("search:"+q, data)
+                if len(diag["errors"]) < 12:
+                    diag["errors"].append({
+                        "stage": "search:"+q,
+                        "error": str(data)[:180],
+                    })
                 continue
+
             diag["search_queries_ok"] += 1
             raw = data.get("pairs") or [] if isinstance(data, dict) else []
             diag["search_pairs_raw"] += len(raw)
+
             for p in raw:
                 add_pair(p)
 
     diag["solana_pairs"] = len(pairs)
     return list(pairs.values()), diag
-
-def _poisson_sample(rng, lam):
+\ndef _poisson_sample(rng, lam):
     """Exact Poisson sampler for the Merton jump-count process."""
     lam = max(0.0, float(lam))
     if lam == 0.0:
@@ -924,16 +924,10 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 
 
 def scan(limit=40, only_meteora=False, strategy="balanced"):
-    """Meme-coin target scanner.
+    """DexScreener meme-coin radar.
 
-    Scanner responsibility is only target discovery/filtering:
-    1) Solana meme identity
-    2) recent age
-    3) real trading volume
-    4) buy/sell activity
-    5) positive pump
-
-    Review/formulas remain completely separate.
+    The scanner only discovers and displays candidates. All intelligence,
+    LP math and prediction happen later in Review.
     """
     limit = min(max(int(limit), 1), 100)
     discovered, discovery_diag = fetch_search_pairs()
@@ -941,7 +935,6 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
     funnel = {
         "discovered": len(discovered),
         "solana": 0,
-        "meme": 0,
         "age": 0,
         "volume": 0,
         "activity": 0,
@@ -964,20 +957,12 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             if not token or not symbol:
                 continue
 
-            # Meme identity is a scanner gate. Keep it broad enough for
-            # pump.fun-origin launches and common meme naming patterns.
-            meme_score, meme_reasons = memecoin_score(p)
-            if meme_score < 35:
-                continue
-            funnel["meme"] += 1
-
+            # Discovery filter only: recent Solana pairs.
             created = p.get("pairCreatedAt") or 0
             age_h = max(
                 0.0,
                 (time.time() * 1000 - float(created)) / 3600000
             ) if created else 9999.0
-
-            # Target the recent 7-day meme-coin window.
             if not 0.25 <= age_h <= 168:
                 continue
             funnel["age"] += 1
@@ -1005,44 +990,27 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             total_6h = buys_6h + sells_6h
             total_24h = buys_24h + sells_24h
 
-            # Busy means meaningful volume in at least one window.
-            has_volume = (
-                v1 >= 1_000 or
-                v6 >= 5_000 or
-                v24 >= 10_000
-            )
-            if not has_volume:
+            # Do not rank or judge the token here. Just discard completely
+            # empty pairs so the dashboard does not show dead API records.
+            if max(v1, v6, v24) <= 0:
                 continue
             funnel["volume"] += 1
 
-            # Buy/sell activity is a separate gate from volume.
-            has_activity = (
-                total_1h >= 5 or
-                total_6h >= 15 or
-                total_24h >= 30
-            )
-            if not has_activity:
+            if max(total_1h, total_6h, total_24h) <= 0:
                 continue
             funnel["activity"] += 1
 
             h1 = float(changes.get("h1") or 0)
             h6 = float(changes.get("h6") or 0)
             h24 = float(changes.get("h24") or 0)
-
-            # "Already pumped" means positive expansion in at least one
-            # live window. We intentionally do not use LP formulas here.
-            pump = (
-                h1 >= 5 or
-                h6 >= 10 or
-                h24 >= 20
-            )
-            if not pump:
-                continue
-            funnel["pump"] += 1
+            if max(h1, h6, h24) > 0:
+                funnel["pump"] += 1
 
             liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
             price = float(p.get("priceUsd") or 0)
             buy_ratio_1h = safe_div(buys_1h, total_1h, 0.5)
+
+            meme_score, meme_reasons = memecoin_score(p)
 
             row = {
                 "token": token,
@@ -1074,13 +1042,13 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 "h24": h24,
                 "meme_score": round(meme_score, 2),
                 "meme_reasons": meme_reasons,
-                "pump_signal": True,
+                "pump_signal": max(h1, h6, h24) > 0,
                 "pump_window": (
-                    "1H" if h1 >= 5 else
-                    "6H" if h6 >= 10 else
-                    "24H"
+                    "1H" if h1 > 0 else
+                    "6H" if h6 > 0 else
+                    "24H" if h24 > 0 else None
                 ),
-                "scan_tier": "MEME_TARGET",
+                "scan_tier": "DEXSCREENER_MEME_DISCOVERY",
                 "scanner_role": "FILTER_ONLY",
                 "source": "DexScreener",
                 "history_available": False,
@@ -1094,22 +1062,16 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             if only_meteora and not row["meteora"]:
                 continue
 
-            # One row per token. Keep the pair with the strongest current
-            # pump/activity/volume signal.
+            # One visible row per token. Keep the pair with the most recent
+            # live activity, but do not convert it into an intelligence score.
             old = by_token.get(token)
-            new_key = (
-                max(h1, h6 / 2, h24 / 4),
-                total_1h,
-                v1,
-                v24,
-                meme_score,
-            )
+            new_key = (total_1h, v1, total_6h, v6, v24)
             old_key = (
-                max(old["h1"], old["h6"] / 2, old["h24"] / 4),
                 old["transactions_1h"],
                 old["volume_1h"],
+                old["transactions_6h"],
+                old["volume_6h"],
                 old["volume_24h"],
-                old["meme_score"],
             ) if old else None
             if old is None or new_key > old_key:
                 by_token[token] = row
@@ -1120,9 +1082,10 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
     rows = sorted(
         by_token.values(),
         key=lambda x: (
-            max(x["h1"], x["h6"] / 2, x["h24"] / 4),
             x["transactions_1h"],
             x["volume_1h"],
+            x["transactions_6h"],
+            x["volume_6h"],
             x["volume_24h"],
         ),
         reverse=True,
@@ -1136,24 +1099,11 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
         "rows": rows,
         "source": "DexScreener" if rows else "none",
         "filters": {
-            "meme_score_min": 35,
+            "discovery_source": "DexScreener API",
             "age_hours_min": 0.25,
             "age_hours_max": 168,
-            "volume_1h_min": 1000,
-            "volume_6h_min": 5000,
-            "volume_24h_min": 10000,
-            "activity_1h_min": 5,
-            "activity_6h_min": 15,
-            "activity_24h_min": 30,
-            "pump_h1_min": 5,
-            "pump_h6_min": 10,
-            "pump_h24_min": 20,
-            "requires_meme_identity": True,
-            "requires_volume": True,
-            "requires_activity": True,
-            "requires_positive_pump": True,
-            "unique_tokens": True,
-            "only_meteora": only_meteora,
+            "requires_live_volume": True,
+            "requires_live_activity": True,
             "scanner_role": "FILTER_ONLY",
         },
         "funnel": funnel,
@@ -1162,6 +1112,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             else "NO_SOLANA_PAIRS"
         ),
     }
+
 
 def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
     """Review a pool from live DexScreener data without historical OHLCV."""
