@@ -206,10 +206,12 @@ function renderReview(d,name){
  const dirCls=direction==='NAIK'?'green':direction==='TURUN'?'red':'yellow';
  const rangeState=escape<0.20?'RANGE KUAT':escape<0.35?'PERLU PANTAU':'RANGE MUDAH JEBOL';
  const rangeCls=escape<0.20?'green':escape<0.35?'yellow':'red';
- const decision=rb.rebalance||escape>=0.35||lp<50?'TUNGGU / REBALANCE':lp>=70&&escape<0.25&&inside>=0.55?'MASUK':'TUNGGU';
- const decisionCls=decision==='MASUK'?'green':decision.startsWith('TUNGGU')?'yellow':'yellow';
- const decisionIcon=decision==='MASUK'?'✓':decision==='TUNGGU'?'⏳':'↻';
- const decisionText=decision==='MASUK'?'Kondisi saat ini cukup mendukung posisi LP.':decision==='TUNGGU / REBALANCE'?'Range terlalu mudah bergeser atau risiko terlalu tinggi untuk masuk sekarang.':'Tunggu kondisi lebih stabil sebelum membuka posisi.';
+ const intel=d.intelligence||{};
+ const decision=intel.decision||((rb.rebalance||escape>=0.35||lp<50)?'TUNGGU':'TUNGGU');
+ const decisionCls=decision==='MASUK'?'green':decision==='REBALANCE'?'red':'yellow';
+ const decisionIcon=decision==='MASUK'?'✓':decision==='REBALANCE'?'↻':'⏳';
+ const decisionText=intel.action_reason||'Tunggu kondisi lebih stabil sebelum membuka posisi.';
+ const finalScore=Number(intel.score||0);
  const escapeBars=mc?.mean_first_escape_bars==null?null:Number(mc.mean_first_escape_bars);
  const escapeText=escapeBars==null?'Belum terdeteksi':escapeBars<4?'< 1 jam':escapeBars<16?'1–4 jam':escapeBars<48?'4–12 jam':'> 12 jam';
  const position=hi>lo?Math.max(0,Math.min(100,(price-lo)/(hi-lo)*100)):50;
@@ -237,6 +239,8 @@ function renderReview(d,name){
    reason(inside>=0.55,'Peluang tetap di range '+pct01(inside),inside>=0.55?'Mayoritas simulasi masih berada di area yang menghasilkan fee.':'Terlalu banyak simulasi keluar dari range.')+
    reason(escape<0.25,'Range '+(escape<0.25?'cukup tahan':'mudah ditembus'),escape<0.25?'Peluang range pernah ditembus masih terkendali.':'Harga berpotensi cepat meninggalkan area LP.')+
    reason(Math.abs(balance)<0.12,'Gerakan '+(Math.abs(balance)<0.12?'dua arah':'satu arah'),Math.abs(balance)<0.12?'Tekanan naik dan turun relatif seimbang.':'Gerakan satu arah membuat range lebih cepat tertinggal.')+
+   (intel.reasons||[]).slice(0,2).map(x=>reason(true,'Intelijen',x)).join('')+
+   (intel.warnings||[]).slice(0,2).map(x=>reason(false,'Peringatan',x)).join('')+
  '</div>'+
  '<div class="card"><div class="section-title">RANGE LP · AREA FEE</div>'+
    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div class="value" style="font-size:16px">'+px(lo)+' → '+px(hi)+'</div><span class="sub">Lebar '+num(r.width_pct,1)+'%</span></div>'+
@@ -271,8 +275,10 @@ function renderReview(d,name){
    '</div>'+
  '</div>'+
  '<div class="card"><div class="section-title">REKOMENDASI</div>'+
-   '<div class="value '+decisionCls+'">'+decision+'</div>'+
-   '<div class="sub" style="margin-top:7px">'+(decision==='MASUK'?'Range masih cukup sehat untuk strategi fee. Tetap pantau jika harga bergerak mendekati batas.':decision==='TUNGGU / REBALANCE'?'Jangan kejar posisi. Tunggu range baru atau lakukan rebalance saat kondisi berubah.':'Belum ada keunggulan yang cukup kuat. Biarkan scanner memantau dan hitung ulang.')+'</div>'+
+   '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px"><div class="value '+decisionCls+'">'+decision+'</div><span class="pill">INTEL '+num(finalScore,0)+'/100</span></div>'+
+   '<div class="sub" style="margin-top:7px">'+esc(decisionText)+'</div>'+
+   '<div class="pulse-row" style="margin-top:6px"><span>Data confidence</span><b>'+esc(intel.data_quality?.confidence||'LOW')+'</b></div>'+
+   '<div class="pulse-row"><span>Data historis nyata</span><b>'+((intel.data_quality?.real_ohlcv_available)?'YA':'BELUM')+'</b></div>'+
  '</div>'+
  '<div class="card"><div class="section-title">CATATAN SINGKAT</div><div class="sub">Hasil ini adalah probabilitas, bukan kepastian harga. Simulasi dihitung ulang dari kondisi pasar terbaru.</div></div>'+
  '</div></div>';
