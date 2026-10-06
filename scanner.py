@@ -959,9 +959,8 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
     }
 
 
-def scan(limit=40, only_meteora=False, strategy="balanced"):
+def scan():
     """Fast DexScreener filter. Scanner discovers; Review analyzes."""
-    limit = min(max(int(limit), 1), 100)
     discovered, discovery_diag = fetch_dexscreener_pairs()
 
     funnel = {
@@ -1092,9 +1091,6 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 "gmgn_url": gmgn_url(token),
             }
 
-            if only_meteora and not row["meteora"]:
-                continue
-
             old = by_token.get(token)
             new_key = (total_1h, v1, total_6h, v6, v24)
             old_key = (
@@ -1122,7 +1118,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             x["volume_24h"],
         ),
         reverse=True,
-    )[:limit]
+    )
 
     funnel["final"] = len(rows)
 
@@ -1154,8 +1150,5 @@ def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=40)
-    ap.add_argument("--meteora", action="store_true")
-    ap.add_argument("--strategy", choices=["conservative", "balanced", "aggressive"], default="balanced")
-    a = ap.parse_args()
-    print(json.dumps(scan(a.limit, a.meteora, a.strategy), indent=2))
+    ap.parse_args()
+    print(json.dumps(scan(), indent=2))
