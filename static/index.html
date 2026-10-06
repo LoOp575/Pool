@@ -193,62 +193,100 @@ async function review(pair,name){
  }
 }
 function renderReview(d,name){
- const m=d.math||{},r=d.range||{},ri=d.risk||{},rb=d.rebalance||{};
- const a=d.analysis||{}, lm=d.live_metrics||{}, mc=d.monte_carlo||null;
- const risk=Number(ri.score||0), riskCls=risk>70?'red':risk>45?'yellow':'green';
- const num=(v,digits=3)=>Number.isFinite(Number(v))?Number(v).toFixed(digits):'—';
- const moneyPx=v=>Number(v||0).toPrecision(7);
- const rangeLower=Number(r.lower||0), rangeUpper=Number(r.upper||0), rangeCenter=Number(r.center||d.price||0);
- const mi=mc?.inputs||{}, mcOut=mc?Number(mc.p_out_of_range||0):null;
+ const r=d.range||{},ri=d.risk||{},rb=d.rebalance||{},a=d.analysis||{},lm=d.live_metrics||{},mc=d.monte_carlo||null;
+ const risk=Number(ri.score||0);
+ const riskCls=risk>70?'red':risk>45?'yellow':'green';
+ const num=(v,digits=2)=>Number.isFinite(Number(v))?Number(v).toFixed(digits):'—';
+ const moneyPx=v=>{
+   const n=Number(v||0);
+   if(!Number.isFinite(n)||n<=0)return '—';
+   return n<0.001?n.toPrecision(6):n.toFixed(6);
+ };
+ const rangeLower=Number(r.lower||0),rangeUpper=Number(r.upper||0),price=Number(d.price||0);
+ const pBelow=Number(mc?.p_below||0),pInside=Number(mc?.p_inside||0),pAbove=Number(mc?.p_above||0);
+ const pEscape=Number(mc?.p_ever_out_of_range ?? ri.out_of_range ?? 0);
+ const direction=pAbove-pBelow;
+ const directionText=direction>0.12?'Cenderung naik':direction<-0.12?'Cenderung turun':'Dua arah / berimbang';
+ const directionCls=direction>0.12?'green':direction<-0.12?'red':'yellow';
+ const safetyText=pEscape<0.20?'RANGE KUAT':pEscape<0.35?'PERLU PANTAU':'RANGE MUDAH JEBOL';
+ const safetyCls=pEscape<0.20?'green':pEscape<0.35?'yellow':'red';
+ const escapeMin=mc?.mean_first_escape_bars==null?null:Number(mc.mean_first_escape_bars)*15;
+ const rangeWidthPct=Number(r.width_pct||0);
+ const position=rangeUpper>rangeLower?Math.max(0,Math.min(100,(price-rangeLower)/(rangeUpper-rangeLower)*100)):50;
+ const insideWidth=Math.max(8,Math.min(84,pInside*84));
+ const belowWidth=Math.max(0,pBelow*84);
+ const aboveWidth=Math.max(0,pAbove*84);
+ const outcomeBar='<div style="display:flex;height:28px;border-radius:7px;overflow:hidden;background:#151f27;margin-top:10px">'+
+   '<div style="width:'+belowWidth+'%;background:#f06f7e55;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800">TURUN '+pct(pBelow)+'</div>'+
+   '<div style="width:'+insideWidth+'%;background:#46d89a44;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800">TETAP DI RANGE '+pct(pInside)+'</div>'+
+   '<div style="width:'+aboveWidth+'%;background:#65b9ff55;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800">NAIK '+pct(pAbove)+'</div></div>';
+ const humanDecision=rb.rebalance?'RANGE PERLU DISESUAIKAN':'RANGE MASIH SEHAT';
+ const decisionCls=rb.rebalance?'yellow':'green';
+ const moveLabel=directionText==='Cenderung naik'?'Tekanan naik lebih dominan':directionText==='Cenderung turun'?'Tekanan turun lebih dominan':'Tekanan beli dan jual relatif berimbang';
+ const escapeLabel=escapeMin==null?'Belum terdeteksi':escapeMin<60?'Cepat, kurang dari 1 jam':escapeMin<240?'Dalam beberapa jam':'Cenderung lebih lambat';
  const mcCard=mc
-  ? '<div class="card"><div class="section-title">MERTON MONTE CARLO · '+Number(mc.horizon_minutes||0)+' MIN · '+Number(mc.paths||0).toLocaleString()+' PATHS</div>'+
-    '<div class="prob"><div>BELOW<h3>'+pct(mc.p_below)+'</h3></div><div>INSIDE<h3 class="green">'+pct(mc.p_inside)+'</h3></div><div>ABOVE<h3>'+pct(mc.p_above)+'</h3></div></div>'+
-    '<div class="sub" style="margin-top:10px">P05 '+moneyPx(mc.p05)+' · P50 '+moneyPx(mc.p50)+' · P95 '+moneyPx(mc.p95)+'</div>'+
-    '<div class="pulse-row" style="margin-top:8px"><span>Expected terminal</span><b>'+moneyPx(mc.expected_terminal_price)+'</b></div>'+
-    '<div class="pulse-row"><span>Ever out of range</span><b class="'+(Number(mc.p_ever_out_of_range||0)>=.30?'red':'green')+'">'+pct(mc.p_ever_out_of_range)+'</b></div>'+
-    '<div class="pulse-row"><span>Mean first escape</span><b>'+(mc.mean_first_escape_bars==null?'—':num(Number(mc.mean_first_escape_bars)*15,0)+' min')+'</b></div>'+
-    '<div class="sub" style="margin-top:8px">Model: <b>'+esc(mc.model||'Merton 1976 jump-diffusion')+'</b><br>Equation: <code>'+esc(mc.model_equation||'')+'</code><br>Calibration: '+esc(mi.calibration||'live snapshot')+' · confidence LOW</div></div>'
-  : '<div class="card"><div class="section-title">MERTON MONTE CARLO</div><div class="value yellow">UNAVAILABLE</div><div class="sub" style="margin-top:7px">'+esc(d.monte_carlo_error||'Simulation gagal. Live movement proxy tetap dipakai untuk risk fallback.')+'</div></div>';
- const params=mc ? '<div class="card"><div class="section-title">MERTON PARAMETERS · LIVE CALIBRATION</div><div class="heat"><div>PARAM</div><div>VALUE</div><div>ROLE</div><div>STATE</div>'+
-   '<div><b>μ</b></div><div>'+num(mi.drift_annualized,3)+'</div><div class="sub">annual drift</div><div>LIVE</div>'+
-   '<div><b>σ</b></div><div>'+num(mi.volatility_annualized,3)+'</div><div class="sub">annual diffusion vol</div><div>LIVE</div>'+
-   '<div><b>λ</b></div><div>'+num(mi.jump_intensity_annualized,1)+'</div><div class="sub">jumps / year</div><div>POISSON</div>'+
-   '<div><b>μJ</b></div><div>'+num(mi.jump_mean_log,4)+'</div><div class="sub">log jump mean</div><div>LOGNORMAL</div>'+
-   '<div><b>σJ</b></div><div>'+num(mi.jump_volatility_log,4)+'</div><div class="sub">log jump vol</div><div>LOGNORMAL</div>'+
-   '<div><b>κ</b></div><div>'+num(mi.jump_expected_multiplier_minus_one,4)+'</div><div class="sub">E[Y−1]</div><div>COMPENSATOR</div>'+
-   '</div><div class="sub" style="margin-top:8px">Buyer/seller, volume, liquidity, activity and momentum calibrate the parameters. Merton tetap menjadi stochastic simulation layer.</div></div>' : '';
+  ? '<div class="card"><div class="section-title">SIMULASI PERGERAKAN · 24 JAM</div>'+
+    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px">'+
+      '<div style="background:#0f171e;border:1px solid #18242d;padding:9px;border-radius:6px"><div class="label">PELUANG TURUN</div><div class="value red">'+pct(pBelow)+'</div></div>'+
+      '<div style="background:#0f171e;border:1px solid #18242d;padding:9px;border-radius:6px"><div class="label">PELUANG TETAP DI RANGE</div><div class="value green">'+pct(pInside)+'</div></div>'+
+      '<div style="background:#0f171e;border:1px solid #18242d;padding:9px;border-radius:6px"><div class="label">PELUANG NAIK</div><div class="value blue">'+pct(pAbove)+'</div></div>'+
+    '</div>'+outcomeBar+
+    '<div class="pulse-row" style="margin-top:10px"><span>Harga tengah yang paling sering muncul</span><b>'+moneyPx(mc.p50)+'</b></div>'+
+    '<div class="pulse-row"><span>Rentang kemungkinan</span><b>'+moneyPx(mc.p05)+' → '+moneyPx(mc.p95)+'</b></div>'+
+    '<div class="pulse-row"><span>Rata-rata harga akhir</span><b>'+moneyPx(mc.expected_terminal_price)+'</b></div>'+
+    '<div class="pulse-row"><span>Jika range jebol, biasanya</span><b>'+escapeLabel+'</b></div>'+
+    '</div>'
+  : '<div class="card"><div class="section-title">SIMULASI PERGERAKAN</div><div class="value yellow">BELUM TERSEDIA</div><div class="sub" style="margin-top:7px">'+esc(d.monte_carlo_error||'Data simulasi belum tersedia.')+'</div></div>';
+
+ const marketBehavior='<div class="card"><div class="section-title">APA YANG TERLIHAT DI PASAR?</div>'+
+   '<div class="pulse-row"><span>Gerakan harga</span><b class="'+directionCls+'">'+directionText+'</b></div>'+
+   '<div class="pulse-row"><span>Aktivitas pasar</span><b>'+((Number(lm.v1||0)>0&&Number(lm.liquidity||0)>0)?num(Number(lm.vol_liq||0),1)+'x volume / liquidity':'—')+'</b></div>'+
+   '<div class="pulse-row"><span>Tekanan beli</span><b>'+pct(lm.buy_ratio||0)+'</b></div>'+
+   '<div class="pulse-row"><span>Perubahan 1 jam</span><b class="'+(Number(lm.h1||0)>=0?'green':'red')+'">'+(Number(lm.h1||0)>=0?'+':'')+num(lm.h1,1)+'%</b></div>'+
+   '<div class="pulse-row"><span>Perubahan 24 jam</span><b class="'+(Number(lm.h24||0)>=0?'green':'red')+'">'+(Number(lm.h24||0)>=0?'+':'')+num(lm.h24,1)+'%</b></div>'+
+   '<div class="sub" style="margin-top:8px">'+moveLabel+'. Angka di atas adalah hasil pembacaan kondisi pasar saat ini.</div></div>';
+
+ const rangeCard='<div class="card"><div class="section-title">RANGE LP</div>'+
+   '<div class="value">'+moneyPx(rangeLower)+' → '+moneyPx(rangeUpper)+'</div>'+
+   '<div class="sub">Lebar range '+num(rangeWidthPct,1)+'% · posisi harga sekarang '+num(position,0)+'%</div>'+
+   '<div class="rangebox" style="margin-top:12px"><div class="rangebar" style="margin-bottom:34px"><div style="position:absolute;left:0;right:0;top:4px;height:18px;border:1px solid #46d89a66;background:#46d89a12;border-radius:3px"></div><div class="marker" style="left:'+position+'%"><span>HARGA SEKARANG</span></div></div></div>'+
+   '<div class="pulse-row"><span>Kesimpulan range</span><b class="'+safetyCls+'">'+safetyText+'</b></div>'+
+   '<div class="sub">'+(pEscape<0.20?'Sebagian besar simulasi tetap berada di area yang menghasilkan fee.':pEscape<0.35?'Masih layak dipantau, tetapi ada peluang range cepat ditembus.':'Range terlalu mudah ditembus untuk kondisi saat ini.')+'</div></div>';
+
+ const scoreCard='<div class="card"><div class="section-title">SKOR KEPUTUSAN</div>'+
+   '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">'+
+     '<div style="background:#0f171e;padding:10px;border-radius:6px"><div class="label">PELUANG LP</div><div class="value '+(Number(a.lp_score||0)>=70?'green':Number(a.lp_score||0)>=55?'yellow':'red')+'">'+num(a.lp_score,0)+'/100</div></div>'+
+     '<div style="background:#0f171e;padding:10px;border-radius:6px"><div class="label">RISIKO</div><div class="value '+riskCls+'">'+num(risk,0)+'/100</div></div>'+
+   '</div>'+
+   '<div class="pulse-row" style="margin-top:8px"><span>Keputusan sekarang</span><b class="'+decisionCls+'">'+humanDecision+'</b></div>'+
+   '<div class="pulse-row"><span>Potensi fee</span><b>'+num(a.lp_components?.fee_potential,0)+'/100</b></div>'+
+   '<div class="pulse-row"><span>Kualitas range</span><b>'+num(a.lp_components?.range_quality_proxy,0)+'/100</b></div>'+
+   '<div class="pulse-row"><span>Keamanan arah harga</span><b>'+num(a.lp_components?.directional_safety,0)+'/100</b></div>'+
+   '</div>';
+
  $('review').innerHTML='<div class="review-shell">'+
  '<div class="review-col"><div><button onclick="back()">← Back to Radar</button></div>'+
- '<div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+Number(d.price||0).toPrecision(8)+'</div>'+
- '<span class="pill">'+esc(d.regime||'LIVE')+'</span><span class="pill blue">'+esc(d.data_source||'DexScreener')+'</span>'+
- '<span class="pill '+riskCls+'">Risk '+risk.toFixed(1)+'/100</span><span class="pill '+(mc?'green':'yellow')+'">'+(mc?'MERTON ACTIVE':'MC FALLBACK')+'</span>'+
- '<span class="pill">'+(rb.rebalance?'REBALANCE '+esc(rb.urgency||'MEDIUM'):'RANGE HEALTHY')+'</span></div>'+
- '<div class="card"><div class="section-title">RANGE INTELLIGENCE · LIVE PROXY</div><div class="value">'+rangeLower.toPrecision(6)+' → '+rangeUpper.toPrecision(6)+'</div>'+
- '<div class="sub">center '+rangeCenter.toPrecision(6)+' · width '+pct(r.width_pct||0)+' · '+esc(r.multipliers?.source||'live')+'</div>'+
- '<div class="rangebox" style="margin-top:9px"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:18%"><span>'+rangeLower.toPrecision(5)+'</span></div><div class="marker" style="left:50%"><span>CURRENT '+Number(d.price||0).toPrecision(5)+'</span></div><div class="marker" style="left:83%"><span>'+rangeUpper.toPrecision(5)+'</span></div></div></div></div>'+
- '<div class="card"><div class="section-title">LIVE STATE · MERTON INPUTS</div>'+
- '<div class="pulse-row"><span>1h / 6h / 24h</span><b>'+num(lm.h1,1)+'% / '+num(lm.h6,1)+'% / '+num(lm.h24,1)+'%</b></div>'+
- '<div class="pulse-row"><span>Volume 1h / 24h</span><b>'+money(Number(lm.v1||0))+' / '+money(Number(lm.v24||0))+'</b></div>'+
- '<div class="pulse-row"><span>Liquidity</span><b>'+money(Number(lm.liquidity||0))+'</b></div>'+
- '<div class="pulse-row"><span>Vol/Liq · 24h/Liq</span><b>'+num(lm.vol_liq,2)+'x · '+num(lm.volume_24_liq,2)+'x</b></div>'+
- '<div class="pulse-row"><span>Buy / sell 1h</span><b>'+Number(lm.buys_1h||0)+' / '+Number(lm.sells_1h||0)+'</b></div>'+
- '<div class="pulse-row"><span>Buy pressure</span><b>'+num(lm.buy_pressure,3)+'</b></div>'+
- '<div class="pulse-row"><span>Volume acceleration</span><b>'+num(lm.volume_acceleration,2)+'x</b></div>'+
- '<div class="pulse-row"><span>Volume persistence</span><b>'+num(lm.volume_persistence,2)+'</b></div></div>'+
- '<div class="card"><div class="section-title">FORMULA ENGINE</div>'+
- '<div class="pulse-row"><span>Discovery score</span><b>'+num(a.score,1)+'</b></div><div class="pulse-row"><span>Fresh score</span><b>'+num(a.fresh_score,1)+'</b></div>'+
- '<div class="pulse-row"><span>LP score</span><b>'+num(a.lp_score,1)+'</b></div><div class="pulse-row"><span>Meme score</span><b>'+num(a.meme_score,1)+'</b></div>'+
- '<div class="sub" style="margin-top:8px">Engine '+esc(d.formula_engine||a.formula_engine||'POOL-INTEL')+' · '+esc(a.mode||'LIVE_SNAPSHOT')+'<br>'+esc(a.prediction_note||'Live formulas use current market state.')+'</div></div>'+
- '</div><div class="review-col">'+mcCard+params+
- '<div class="card"><div class="section-title">RISK ENGINE · RANGE SURVIVAL</div><div class="value '+riskCls+'">'+risk.toFixed(1)+'</div>'+
- '<div class="sub">P(ever out-of-range) <b>'+pct(ri.out_of_range||0)+'</b> · source <b>'+esc(ri.out_of_range_source||'LIVE')+'</b><br>IL proxy '+(ri.il_proxy==null?'N/A':pct(ri.il_proxy))+' · Fee yield '+(ri.fee_yield==null?'N/A':pct(ri.fee_yield))+'</div>'+
- '<hr style="border-color:#1b303b;border-width:1px 0 0;margin:10px 0"><div class="small">'+(ri.notes||[]).map(esc).join(' · ')+'</div></div>'+
- '<div class="card"><div class="section-title">LP DECISION</div><div class="value '+riskCls+'">'+(rb.rebalance?'REBALANCE':'RANGE HEALTHY')+'</div>'+
- '<div class="sub" style="margin-top:7px">Confidence: <b>'+esc(d.confidence||'LIVE')+'</b><br>Data source: <b>'+esc(d.data_source||'DexScreener')+'</b><br>Model status: <b>'+esc(d.model_status||'LIVE_ONLY')+'</b></div>'+
- '<div style="margin-top:14px"><div class="section-title">QUICK READ</div><div class="reason"><span class="dotmini"></span>Regime <b>'+esc(d.regime||'—')+'</b></div>'+
- '<div class="reason"><span class="dotmini"></span>1h move <b>'+num(lm.h1,1)+'%</b></div><div class="reason"><span class="dotmini"></span>Buy ratio <b>'+pct(lm.buy_ratio||0)+'</b></div>'+
- '<div class="reason"><span class="dotmini"></span>Range width <b>'+pct(r.width_pct||0)+'</b></div><div class="reason"><span class="dotmini"></span>MC ever out-of-range <b>'+(mcOut==null?'—':pct(mcOut))+'</b></div></div></div>'+
- '<div class="card"><div class="section-title">MODEL HONESTY</div><div class="sub">Merton simulation uses the standard diffusion + Poisson jump + lognormal jump-size structure. Parameter calibration is Pool-specific and snapshot-based because no real OHLCV history is available. This is a <b>LOW-confidence scenario probability</b>, not a guaranteed forecast.</div></div>'+
+ '<div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+moneyPx(price)+'</div>'+
+ '<span class="pill '+decisionCls+'">'+humanDecision+'</span><span class="pill blue">'+esc(d.data_source||'DexScreener')+'</span>'+
+ '<span class="pill '+safetyCls+'">'+safetyText+'</span><span class="pill '+directionCls+'">'+directionText+'</span></div>'+
+ rangeCard+marketBehavior+scoreCard+
+ '</div><div class="review-col">'+
+ '<div class="card"><div class="section-title">KESIMPULAN CEPAT</div>'+
+ '<div class="value '+safetyCls+'">'+safetyText+'</div>'+
+ '<div class="sub" style="margin-top:7px">Peluang harga tetap di dalam range <b>'+pct(pInside)+'</b>. Peluang range pernah ditembus <b>'+pct(pEscape)+'</b>.</div>'+
+ '<div style="margin-top:10px">'+outcomeBar+'</div>'+
+ '<div class="pulse-row" style="margin-top:10px"><span>Arah dominan</span><b class="'+directionCls+'">'+directionText+'</b></div>'+
+ '<div class="pulse-row"><span>Kecepatan potensi jebol</span><b>'+escapeLabel+'</b></div>'+
+ '</div>'+mcCard+
+ '<div class="card"><div class="section-title">APA ARTINYA UNTUK LP?</div>'+
+ '<div class="reason"><span class="dotmini"></span><b>'+ (pInside>=0.65?'Bagus untuk fee':'Belum ideal untuk fee') +'</b><br><span class="sub">'+(pInside>=0.65?'Mayoritas simulasi tetap berputar di dalam range.':'Terlalu banyak simulasi keluar range, sehingga posisi perlu lebih sering disesuaikan.')+'</span></div>'+
+ '<div class="reason"><span class="dotmini"></span><b>'+ (pEscape<0.25?'Range relatif tahan':'Range cukup mudah ditembus') +'</b><br><span class="sub">'+(pEscape<0.25?'Risiko harga keluar area masih terkendali.':'Pergerakan agresif dapat mengurangi waktu posisi aktif.')+'</span></div>'+
+ '<div class="reason"><span class="dotmini"></span><b>'+ (Math.abs(direction)<0.12?'Gerakan dua arah lebih sehat':'Gerakan satu arah perlu diwaspadai') +'</b><br><span class="sub">'+(Math.abs(direction)<0.12?'Beli dan jual relatif seimbang untuk strategi fee.':'Pergerakan satu arah meningkatkan risiko range cepat tertinggal.')+'</span></div>'+
+ '</div>'+
+ '<div class="card"><div class="section-title">REKOMENDASI</div><div class="value '+decisionCls+'">'+humanDecision+'</div><div class="sub" style="margin-top:7px">'+
+ (rb.rebalance?'Jangan terlalu percaya range saat ini. Pantau pergeseran harga dan siapkan rebalance.':'Range saat ini masih masuk akal. Fokus utama adalah menjaga posisi tetap berada di area fee.')+
+ '</div></div>'+
+ '<div class="card"><div class="section-title">CATATAN</div><div class="sub">Ini adalah simulasi probabilitas dari kondisi pasar saat ini, bukan janji harga. Semakin cepat kondisi pasar berubah, semakin cepat hasil simulasi perlu dihitung ulang.</div></div>'+
  '</div></div>';
 }
 function back(){$('review').style.display='none';$('dashboard').classList.remove('hidden');}
