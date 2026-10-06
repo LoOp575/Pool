@@ -57,7 +57,7 @@ hr{border-color:var(--line)!important}
  <div class="card"><div class="label">Meme pools</div><div class="value" id="kPools">—</div><div class="sub">discovered now</div></div>
  <div class="card"><div class="label">LP opportunities</div><div class="value green" id="kOpp">—</div><div class="sub">LP score ≥ 70</div></div>
  <div class="card"><div class="label">High risk</div><div class="value red" id="kRisk">—</div><div class="sub">directional pressure</div></div>
- <div class="card"><div class="label">Avg LP score</div><div class="value" id="kScore">—</div><div class="sub">balanced engine</div></div>
+ <div class="card"><div class="label">Avg LP score</div><div class="value" id="kScore">—</div><div class="sub" id="scoreMode">balanced engine</div></div>
  <div class="card"><div class="label">Avg Vol/Liq</div><div class="value cyan" id="kVL">—</div><div class="sub">fee intensity proxy</div></div>
  <div class="card"><div class="label">Meteora</div><div class="value purple" id="kMet">—</div><div class="sub">eligible pools</div></div>
 </div>
@@ -117,10 +117,11 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 async function load(){
  $('status').textContent='scanning…';
  try{
-  const u='/api/scan?limit='+$('limit').value+'&meteora='+($('met').checked?1:0);
+  const u='/api/scan?limit='+$('limit').value+'&strategy='+encodeURIComponent($('mode').value)+'&meteora='+($('met').checked?1:0);
   const res=await fetch(u); const d=await res.json(); if(!res.ok||d.error)throw Error(d.error||'scan gagal');
   DATA=d; render(d);
-  $('status').textContent='updated '+new Date().toLocaleTimeString();
+  $('scoreMode').textContent=($('mode').value||'balanced')+' engine';
+  $('status').textContent=($('mode').value||'balanced').toUpperCase()+' · updated '+new Date().toLocaleTimeString();
  }catch(e){$('status').textContent='error: '+e.message}
 }
 function render(d){
@@ -192,7 +193,7 @@ function renderReview(d,name){
 }
 function back(){$('review').style.display='none';$('dashboard').classList.remove('hidden');}
 setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()},1000);
-$('mode').addEventListener('change',()=>{if(DATA)render(DATA)});
+$('mode').addEventListener('change',()=>load());
 load();
 </script>
 </body></html>
