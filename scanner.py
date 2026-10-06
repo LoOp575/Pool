@@ -27,64 +27,148 @@ FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
 
 
 def fetch_seed_tokens():
-    """Discover Solana tokens from DexScreener public feeds, no keyword search."""
-    out={}
-    paths=(
+    """Discover broad Solana token candidates from DexScreener feeds."""
+    paths = (
         "/token-boosts/latest/v1",
         "/token-boosts/top/v1",
         "/token-profiles/latest/v1",
     )
-    for path in paths:
+
+    def one(path):
         try:
-            data=get_json(DEX_URL+path)
-            for item in data if isinstance(data,list) else []:
-                if item.get("chainId")=="solana" and item.get("tokenAddress"):
-                    token=str(item["tokenAddress"])
-                    out[token]={"chainId":"solana","tokenAddress":token}
-        except Exception:
-            pass
-    return list(out.values())
+            data = get_json(DEX_URL + path)
+            items = data if isinstance(data, list) else []
+            return path, items, None
+        except Exception as exc:
+            return path, [], str(exc)[:180]
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(one, paths))
+
+    errors = []
+    for path, items, err in results:
+        if err:
+            errors.append({"stage": path, "error": err})
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("chainId") != "solana":
+                continue
+            address = item.get("tokenAddress")
+            if not address:
+                continue
+            address = str(address)
+            out[address.lower()] = {
+                "chainId": "solana",
+                "tokenAddress": address,
+            }
+
+    # Keep the discovery request bounded for Vercel/serverless execution.
+    return list(out.values())[:90], errors
 
 
 def fetch_pairs_batch(tokens):
-    """Resolve live Solana pairs from DexScreener token endpoints."""
+    """Resolve candidates through DexScreener's multi-token endpoint."""
     if not tokens:
-        return [], 0
-    all_pairs=[]
-    failed_batches=0
-    for i in range(0, len(tokens), 30):
-        batch=tokens[i:i+30]
-        addresses=",".join(t["tokenAddress"] for t in batch)
+        return [], 0, []
+
+    batches = [tokens[i:i + 30] for i in range(0, len(tokens), 30)]
+
+    def one(batch):
+        addresses = ",".join(t["tokenAddress"] for t in batch)
         try:
-            data=get_json(
-                DEX_URL+"/latest/dex/tokens/"+urllib.parse.quote(addresses,safe=",")
+            data = get_json(
+                DEX_URL + "/latest/dex/tokens/" +
+                urllib.parse.quote(addresses, safe=",")
             )
-            if isinstance(data,dict):
-                all_pairs.extend(data.get("pairs") or [])
-        except Exception:
-            failed_batches += 1
-    return all_pairs, failed_batches
+            pairs = data.get("pairs") or [] if isinstance(data, dict) else []
+            return pairs, None
+        except Exception as exc:
+            return [], str(exc)[:180]
+
+    all_pairs = []
+    failed = 0
+    errors = []
+    # Parallel batches prevent a slow feed from making the Vercel function
+    # look like a blank scanner.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for pairs, err in pool.map(one, batches):
+            all_pairs.extend(pairs)
+            if err:
+                failed += 1
+                if len(errors) < 8:
+                    errors.append({"stage": "token-batch", "error": err})
+
+    return all_pairs, failed, errors
 
 
 def fetch_pairs_fallback(tokens):
-    """Per-token DexScreener fallback when the batch endpoint is empty/fails."""
+    """Bounded per-token fallback using another DexScreener pair endpoint."""
     if not tokens:
-        return []
-    out=[]
+        return [], []
+
     def one(token):
         try:
-            return get_json(
-                DEX_URL+"/token-pairs/v1/solana/"+
-                urllib.parse.quote(token["tokenAddress"],safe="")
+            data = get_json(
+                DEX_URL + "/token-pairs/v1/solana/" +
+                urllib.parse.quote(token["tokenAddress"], safe="")
             )
-        except Exception:
-            return []
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for data in pool.map(one,tokens[:64]):
-            if isinstance(data,list):
-                out.extend(data)
-    return out
+            return data if isinstance(data, list) else [], None
+        except Exception as exc:
+            return [], str(exc)[:180]
 
+    out = []
+    errors = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(one, tokens[:48]))
+    for pairs, err in results:
+        out.extend(pairs)
+        if err and len(errors) < 8:
+            errors.append({"stage": "pair-fallback", "error": err})
+    return out, errors
+
+
+def fetch_dexscreener_pairs():
+    """Single-purpose DexScreener discovery. No coin-name keyword search."""
+    diag = {
+        "feed_tokens": 0,
+        "expanded_tokens": 0,
+        "expanded_pairs": 0,
+        "fallback_pairs": 0,
+        "solana_pairs": 0,
+        "errors": [],
+    }
+
+    tokens, feed_errors = fetch_seed_tokens()
+    diag["feed_tokens"] = len(tokens)
+    diag["expanded_tokens"] = len(tokens)
+    diag["errors"].extend(feed_errors[:8])
+
+    pairs, failed_batches, batch_errors = fetch_pairs_batch(tokens)
+    diag["expanded_pairs"] = len(pairs)
+    diag["errors"].extend(batch_errors[:8])
+
+    # Always merge a small fallback set. This avoids the old failure mode
+    # where one non-empty but stale batch prevented fallback discovery.
+    fallback, fallback_errors = fetch_pairs_fallback(tokens)
+    diag["fallback_pairs"] = len(fallback)
+    diag["errors"].extend(fallback_errors[:8])
+    pairs.extend(fallback)
+
+    unique = {}
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        if pair.get("chainId") != "solana":
+            continue
+        address = pair.get("pairAddress")
+        if address:
+            unique[str(address)] = pair
+
+    diag["solana_pairs"] = len(unique)
+    diag["batch_failures"] = failed_batches
+    return list(unique.values()), diag
 
 def continuation_score(price_change,volume,liquidity,txns,buys,sells,age_h,price_change_5m=0):
     pump=score01((price_change-.12)/1.20)
@@ -931,27 +1015,23 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 
 
 def scan(limit=40, only_meteora=False, strategy="balanced"):
-    """DexScreener target scanner.
-
-    The scanner only discovers and displays candidates. All intelligence,
-    LP math and prediction happen later in Review.
-    """
+    """Fast DexScreener filter. Scanner discovers; Review analyzes."""
     limit = min(max(int(limit), 1), 100)
-    discovered, discovery_diag = fetch_search_pairs()
+    discovered, discovery_diag = fetch_dexscreener_pairs()
 
     funnel = {
         "discovered": len(discovered),
         "solana": 0,
-        "meme": 0,
+        "token_data": 0,
         "age": 0,
         "volume": 0,
         "activity": 0,
-        "pump": 0,
         "final": 0,
         "row_errors": 0,
         "row_error_samples": [],
         "discovery": discovery_diag,
     }
+
     by_token = {}
 
     for p in discovered:
@@ -961,22 +1041,21 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             funnel["solana"] += 1
 
             base = p.get("baseToken") or {}
-            token = base.get("address")
+            token = str(base.get("address") or "").strip()
             symbol = str(base.get("symbol") or "").strip()
             name = str(base.get("name") or "").strip()
-            if not token or not symbol:
+            pair = str(p.get("pairAddress") or "").strip()
+            if not token or not symbol or not pair:
                 continue
+            funnel["token_data"] += 1
 
-            # DexScreener supplies the candidate. No meme keyword or
-            # meme-score gate is used by the scanner.
-            funnel["meme"] += 1
-
-            # Discovery filter only: recent Solana pairs.
-            created = p.get("pairCreatedAt") or 0
+            created = p.get("pairCreatedAt")
+            if not created:
+                continue
             age_h = max(
                 0.0,
                 (time.time() * 1000 - float(created)) / 3600000
-            ) if created else 9999.0
+            )
             if not 0.25 <= age_h <= 168:
                 continue
             funnel["age"] += 1
@@ -989,23 +1068,23 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             v6 = float(volume.get("h6") or 0)
             v24 = float(volume.get("h24") or 0)
 
-            h1tx = txns.get("h1") or {}
-            h6tx = txns.get("h6") or {}
-            h24tx = txns.get("h24") or {}
+            t1 = txns.get("h1") or {}
+            t6 = txns.get("h6") or {}
+            t24 = txns.get("h24") or {}
 
-            buys_1h = int(h1tx.get("buys") or 0)
-            sells_1h = int(h1tx.get("sells") or 0)
-            buys_6h = int(h6tx.get("buys") or 0)
-            sells_6h = int(h6tx.get("sells") or 0)
-            buys_24h = int(h24tx.get("buys") or 0)
-            sells_24h = int(h24tx.get("sells") or 0)
+            buys_1h = int(t1.get("buys") or 0)
+            sells_1h = int(t1.get("sells") or 0)
+            buys_6h = int(t6.get("buys") or 0)
+            sells_6h = int(t6.get("sells") or 0)
+            buys_24h = int(t24.get("buys") or 0)
+            sells_24h = int(t24.get("sells") or 0)
 
             total_1h = buys_1h + sells_1h
             total_6h = buys_6h + sells_6h
             total_24h = buys_24h + sells_24h
 
-            # Do not rank or judge the token here. Just discard completely
-            # empty pairs so the dashboard does not show dead API records.
+            # The scanner only needs live flow. No score, formula, or
+            # memecoin identity is calculated here.
             if max(v1, v6, v24) <= 0:
                 continue
             funnel["volume"] += 1
@@ -1014,22 +1093,19 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 continue
             funnel["activity"] += 1
 
+            liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
+            price = float(p.get("priceUsd") or 0)
             h1 = float(changes.get("h1") or 0)
             h6 = float(changes.get("h6") or 0)
             h24 = float(changes.get("h24") or 0)
-            if max(h1, h6, h24) > 0:
-                funnel["pump"] += 1
-
-            liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
-            price = float(p.get("priceUsd") or 0)
-            buy_ratio_1h = safe_div(buys_1h, total_1h, 0.5)
+            buy_ratio = safe_div(buys_1h, total_1h, 0.5)
 
             row = {
                 "token": token,
                 "base": symbol,
                 "name": name,
                 "quote": (p.get("quoteToken") or {}).get("symbol"),
-                "pair": p.get("pairAddress"),
+                "pair": pair,
                 "dex": p.get("dexId"),
                 "url": p.get("url"),
                 "price": price,
@@ -1047,7 +1123,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 "transactions_1h": total_1h,
                 "transactions_6h": total_6h,
                 "transactions_24h": total_24h,
-                "buy_ratio_1h": round(buy_ratio_1h, 4),
+                "buy_ratio_1h": round(buy_ratio, 4),
                 "liquidity": liquidity,
                 "h1": h1,
                 "h6": h6,
@@ -1058,7 +1134,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                     "6H" if h6 > 0 else
                     "24H" if h24 > 0 else None
                 ),
-                "scan_tier": "DEXSCREENER_DISCOVERY",
+                "scan_tier": "DEXSCREENER_FLOW",
                 "scanner_role": "FILTER_ONLY",
                 "source": "DexScreener",
                 "history_available": False,
@@ -1072,8 +1148,6 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             if only_meteora and not row["meteora"]:
                 continue
 
-            # One visible row per token. Keep the pair with the most recent
-            # live activity, but do not convert it into an intelligence score.
             old = by_token.get(token)
             new_key = (total_1h, v1, total_6h, v6, v24)
             old_key = (
@@ -1087,12 +1161,9 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 by_token[token] = row
 
         except Exception as exc:
-            # Keep scanning remaining candidates while exposing bounded
-            # diagnostics instead of silently dropping malformed pairs.
             funnel["row_errors"] += 1
             if len(funnel["row_error_samples"]) < 8:
                 funnel["row_error_samples"].append(str(exc)[:180])
-            continue
 
     rows = sorted(
         by_token.values(),
@@ -1117,7 +1188,6 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             "discovery_source": "DexScreener API",
             "age_hours_min": 0.25,
             "age_hours_max": 168,
-            "meme_identity_required": False,
             "requires_live_volume": True,
             "requires_live_activity": True,
             "scanner_role": "FILTER_ONLY",
@@ -1128,7 +1198,6 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             else "NO_SOLANA_PAIRS"
         ),
     }
-
 
 def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
     """Review a pool from live DexScreener data without historical OHLCV."""
