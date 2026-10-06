@@ -370,7 +370,7 @@ def fetch_search_pairs():
     # price-change data which the dashboard can display.
     queries = [
         "meme", "pump", "pepe", "doge", "bonk",
-        "wif", "cat", "inu", "frog", "popcat",
+        "wif", "cat", "inu",
     ]
     diag["search_queries_total"] = len(queries)
 
@@ -935,6 +935,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
     funnel = {
         "discovered": len(discovered),
         "solana": 0,
+        "meme": 0,
         "age": 0,
         "volume": 0,
         "activity": 0,
@@ -956,6 +957,12 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             name = str(base.get("name") or "").strip()
             if not token or not symbol:
                 continue
+
+            # Meme identity is the only semantic filter in the scanner.
+            # This is discovery, not an LP/intelligence score.
+            if not is_memecoin_pair(p):
+                continue
+            funnel["meme"] += 1
 
             # Discovery filter only: recent Solana pairs.
             created = p.get("pairCreatedAt") or 0
@@ -1102,6 +1109,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             "discovery_source": "DexScreener API",
             "age_hours_min": 0.25,
             "age_hours_max": 168,
+            "meme_identity_required": True,
             "requires_live_volume": True,
             "requires_live_activity": True,
             "scanner_role": "FILTER_ONLY",
