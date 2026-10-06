@@ -457,15 +457,29 @@ def enrich_post_pump(rows):
 
 def scan(limit=40,only_meteora=False,strategy="balanced"):
     candidates=[]
+    funnel = {
+        "discovered": 0, "meme_score": 0, "liquidity": 0, "age_1_7d": 0,
+        "active_volume": 0, "history_checked": 0, "history_available": 0,
+        "pump_30pct": 0, "volume_persistence": 0, "not_faded": 0,
+        "fallback_24h": 0, "final_before_dedupe": 0, "final": 0
+    }
+    discovered = fetch_search_pairs()
+    funnel["discovered"] = len(discovered)
 
-    for p in fetch_search_pairs():
+    for p in discovered:
         try:
             meme_score,_=memecoin_score(p)
             if meme_score < 35:
                 continue
+            funnel["meme_score"] += 1
             score,row=rank_pair(p, strategy)
             if row["liquidity"] < 500:
                 continue
+            funnel["liquidity"] += 1
+            if 24 <= row.get("age_h", 999) <= 168:
+                funnel["age_1_7d"] += 1
+                if row.get("v24", 0) >= max(3_000, row.get("liquidity", 0) * 0.015):
+                    funnel["active_volume"] += 1
             row["source"]="DexScreener"
             if only_meteora and not row["meteora"]:
                 continue
@@ -475,16 +489,21 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
 
     # Stage 2: prove the candidate is a young (1-7d) memecoin that has
     # already pumped and still has meaningful post-pump volume.
+    funnel["history_checked"] = sum(1 for r in candidates if 24 <= r.get("age_h", 999) <= 168 and r.get("v24", 0) >= max(3_000, r.get("liquidity", 0) * 0.015))
     enriched = enrich_post_pump(candidates)
+    funnel["history_available"] = len(enriched)
     candidates = []
     enriched_pairs = {x.get("pair") for x in enriched}
     for row in enriched:
         if row.get("pump_pct", 0) < 0.30:
             continue
+        funnel["pump_30pct"] += 1
         if row.get("volume_persistence", 0) < 0.20:
             continue
+        funnel["volume_persistence"] += 1
         if row.get("pump_stage") == "FADE":
             continue
+        funnel["not_faded"] += 1
         if row.get("pump_stage") == "RUNAWAY":
             row["post_pump_score"] *= 0.70
         row["score"] = clamp(
@@ -498,7 +517,7 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
     # History can be temporarily unavailable. Keep a lower-confidence
     # CURRENT_24H fallback instead of returning an empty scanner.
     historical_pairs = {x.get("pair") for x in candidates}
-    for p in fetch_search_pairs():
+    for p in discovered:
         try:
             meme_score,_ = memecoin_score(p)
             if meme_score < 35:
@@ -521,9 +540,11 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
             row["post_pump_edge"] = round(row["post_pump_score"], 2)
             row["score"] = clamp(0.78 * row["lp_score"] + 0.22 * row["post_pump_score"], 0, 100)
             candidates.append(row)
+            funnel["fallback_24h"] += 1
         except Exception:
             continue
 
+    funnel["final_before_dedupe"] = len(candidates)
     by_token={}
     for x in candidates:
         token=x.get("token") or ""
@@ -532,6 +553,7 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
         if old is None or (x["score"],x["v1"],x["liquidity"]) > (old["score"],old["v1"],old["liquidity"]):
             by_token[key]=x
 
+    funnel["final"] = len(by_token)
     rows=sorted(
         by_token.values(),
         key=lambda x:(x["lp_score"],x["score"],x["memecoin_score"],x["v1"],x["liquidity"]),
@@ -564,7 +586,8 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
             "gmgn_mode":"web-reference-only",
             "only_meteora":only_meteora,
             "strategy":strategy
-        }
+        },
+        "funnel": funnel
     }
 
 if __name__=="__main__":
