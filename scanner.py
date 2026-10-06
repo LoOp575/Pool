@@ -22,13 +22,31 @@ def score01(x):return clamp(float(x),0,1)
 def safe_div(a,b,d=0):return a/b if b else d
 
 def fetch_seed_tokens():
+    """Broad Solana discovery using documented public DexScreener endpoints."""
     out={}
-    for path in ["/token-profiles/latest/v1","/token-boosts/latest/v1","/token-boosts/top/v1"]:
+    paths=["/token-profiles/latest/v1","/token-boosts/latest/v1","/token-boosts/top/v1",
+           "/community-takeovers/latest/v1","/ads/latest/v1"]
+    for path in paths:
         try:
             data=get_json(DEX_URL+path)
             for x in data if isinstance(data,list) else []:
-                if x.get("chainId")=="solana" and x.get("tokenAddress"):out[x["tokenAddress"]]=x
-        except Exception:pass
+                if x.get("chainId")=="solana" and x.get("tokenAddress"):
+                    out[x["tokenAddress"]]=x
+        except Exception:
+            pass
+
+    # Search is a much wider discovery net than profiles/boosts alone.
+    # Each query returns a fresh set of pairs; dedup happens below.
+    for q in ["SOL","USDC","USDT","pump","meme","dog","cat","pepe","ai","inu","moon"]:
+        try:
+            data=get_json(DEX_URL+"/latest/dex/search?"+urllib.parse.urlencode({"q":q}))
+            for p in (data.get("pairs") or []) if isinstance(data,dict) else []:
+                if p.get("chainId")=="solana":
+                    token=(p.get("baseToken") or {}).get("address")
+                    if token:
+                        out[token]={"chainId":"solana","tokenAddress":token}
+        except Exception:
+            pass
     return list(out.values())
 
 def fetch_pairs(token):
@@ -69,7 +87,7 @@ def scan(limit=40,only_meteora=False):
         for p in fetch_pairs(seed.get("tokenAddress")):
             if p.get("chainId")!="solana":continue
             score,row=rank_pair(p)
-            if row["h1"]<8 or row["v1"]<10_000 or row["liquidity"]<5_000:continue
+            if row["v1"]<500 or row["liquidity"]<1_000:continue
             row["source"]="DexScreener"
             if only_meteora and not row["meteora"]:continue
             candidates.append(row)
@@ -83,8 +101,8 @@ def scan(limit=40,only_meteora=False):
     sources=sorted(set(x.get("source","unknown") for x in rows))
     return {"generated_at":int(time.time()),"count":len(rows),"rows":rows,
             "source":" + ".join(sources) if sources else "none",
-            "filters":{"min_1h_pump_dex":8,"min_1h_volume_usd_dex":10000,
-                       "min_liquidity_usd_dex":5000,"gmgn_enabled":False,"gmgn_mode":"web-reference-only",
+            "filters":{"min_1h_pump_dex":0,"min_1h_volume_usd_dex":500,
+                       "min_liquidity_usd_dex":1000,"gmgn_enabled":False,"gmgn_mode":"web-reference-only",
                        "only_meteora":only_meteora}}
 
 if __name__=="__main__":
