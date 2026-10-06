@@ -334,36 +334,19 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """Fast DexScreener-only meme discovery with a bounded fallback.
-
-    Discovery never runs LP math, ranking, Monte Carlo, or intelligence.
-    The search response is used directly; if search is unavailable, a small
-    DexScreener token-profile/boost fallback expands only a bounded set.
-    """
+    """DexScreener-only meme discovery. No intelligence or LP math."""
     pairs = {}
-    diag = {
-        "search_queries_total": 0,
-        "search_queries_ok": 0,
-        "search_pairs_raw": 0,
-        "solana_pairs": 0,
-        "fallback_tokens": 0,
-        "fallback_pairs": 0,
-        "errors": [],
-    }
+    diag = {"search_queries_total": 0, "search_queries_ok": 0,
+            "search_pairs_raw": 0, "solana_pairs": 0,
+            "fallback_tokens": 0, "fallback_pairs": 0, "errors": []}
 
-    def record_error(stage, detail):
+    def error(stage, exc):
         if len(diag["errors"]) < 12:
-            diag["errors"].append({
-                "stage": stage,
-                "error": str(detail)[:180],
-            })
+            diag["errors"].append({"stage": stage, "error": str(exc)[:180]})
 
     def add_pair(p):
-        if not isinstance(p, dict) or p.get("chainId") != "solana":
-            return
-        address = p.get("pairAddress")
-        if address:
-            pairs[address] = p
+        if isinstance(p, dict) and p.get("chainId") == "solana" and p.get("pairAddress"):
+            pairs[p["pairAddress"]] = p
 
     def search(q):
         try:
@@ -374,14 +357,12 @@ def fetch_search_pairs():
         except Exception as exc:
             return q, exc
 
-    # Broad meme keywords. DexScreener itself is responsible for discovery.
     queries = ["meme", "pump", "pepe", "bonk", "doge", "wif", "cat", "inu"]
     diag["search_queries_total"] = len(queries)
-
     with ThreadPoolExecutor(max_workers=8) as pool:
         for q, data in pool.map(search, queries):
             if isinstance(data, Exception):
-                record_error("search:"+q, data)
+                error("search:"+q, data)
                 continue
             diag["search_queries_ok"] += 1
             raw = data.get("pairs") or [] if isinstance(data, dict) else []
@@ -389,24 +370,20 @@ def fetch_search_pairs():
             for p in raw:
                 add_pair(p)
 
-    # If search returned no usable Solana pairs, use only DexScreener's
-    # public discovery feeds as a bounded recovery path.
     if not pairs:
-        token_ids = set()
-        for path in (
-            "/token-profiles/latest/v1",
-            "/token-boosts/latest/v1",
-            "/token-boosts/top/v1",
-        ):
+        tokens = set()
+        for path in ("/token-profiles/latest/v1",
+                     "/token-boosts/latest/v1",
+                     "/token-boosts/top/v1"):
             try:
                 data = get_json(DEX_URL + path)
                 for item in data if isinstance(data, list) else []:
                     if item.get("chainId") == "solana" and item.get("tokenAddress"):
-                        token_ids.add(str(item["tokenAddress"]))
+                        tokens.add(str(item["tokenAddress"]))
             except Exception as exc:
-                record_error("fallback:"+path, exc)
+                error("fallback:"+path, exc)
 
-        tokens = list(token_ids)[:24]
+        tokens = list(tokens)[:24]
         diag["fallback_tokens"] = len(tokens)
 
         def expand(token):
@@ -421,12 +398,755 @@ def fetch_search_pairs():
         with ThreadPoolExecutor(max_workers=8) as pool:
             for token, data in pool.map(expand, tokens):
                 if isinstance(data, Exception):
-                    record_error("pair:"+token, data)
+                    error("pair:"+token, data)
                     continue
                 for p in data if isinstance(data, list) else []:
-                    add_pair(p)
                     diag["fallback_pairs"] += 1
+                    add_pair(p)
 
     diag["solana_pairs"] = len(pairs)
     return list(pairs.values()), diag
 
+
+def _poisson_sample(rng, lam):
+    """Exact Poisson sampler for the Merton jump-count process."""
+    lam = max(0.0, float(lam))
+    if lam == 0.0:
+        return 0
+    if lam < 30.0:
+        limit = math.exp(-lam)
+        k = 0
+        p = 1.0
+        while p > limit:
+            k += 1
+            p *= rng.random()
+        return k - 1
+    # Stable normal approximation for very large Poisson means.
+    return max(0, int(round(rng.gauss(lam, math.sqrt(lam)))))
+
+
+def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidity,
+                          buys, sells, transactions, lower, upper, horizon_bars=96, paths=2000):
+    """
+    Merton (1976) jump-diffusion Monte Carlo driven by the live DexScreener state.
+
+    The stochastic process is the original Merton structure:
+        dS/S = (mu - lambda*k)dt + sigma*dW + (Y - 1)dN
+        Y = exp(N(mu_J, sigma_J^2))
+        k = E[Y - 1] = exp(mu_J + sigma_J^2/2) - 1
+        N ~ Poisson(lambda*dt)
+
+    We estimate the model parameters from the current snapshot because this
+    repository intentionally has no synthetic/historical candles. The
+    parameter-estimation layer is Pool-specific; the Merton simulation itself
+    follows the standard jump-diffusion equation.
+    """
+    if price <= 0:
+        raise ValueError("Harga live tidak valid.")
+
+    total = max(1, int(buys) + int(sells))
+    buy_ratio = clamp(safe_div(buys, total, 0.5), 0, 1)
+    buy_pressure = (buy_ratio - 0.5) * 2.0
+
+    volume_liq = safe_div(float(volume_1h or 0), max(float(liquidity or 0), 1), 0)
+    volume_24_liq = safe_div(float(volume_24h or 0), max(float(liquidity or 0), 1), 0)
+    volume_acceleration = safe_div(float(volume_1h or 0), max(float(volume_24h or 0) / 24.0, 1.0), 0)
+    volume_force = clamp(
+        0.65 * score01(math.log1p(max(volume_liq, 0)) / math.log1p(20)) +
+        0.35 * score01(math.log1p(max(volume_24_liq, 0)) / math.log1p(60)),
+        0, 1
+    )
+    acceleration_force = score01(volume_acceleration / 3.0)
+    activity_force = score01(math.log1p(max(int(transactions), 0)) / math.log1p(1000))
+
+    # Thin liquidity increases jump intensity and jump dispersion.
+    liquidity_force = 1 - score01(
+        math.log1p(max(float(liquidity or 0), 0)) / math.log1p(2_000_000)
+    )
+
+    momentum = clamp(
+        0.40 * math.tanh(float(m5 or 0) / 8.0) +
+        0.30 * math.tanh(float(h1 or 0) / 25.0) +
+        0.20 * math.tanh(float(h6 or 0) / 60.0) +
+        0.10 * math.tanh(float(h24 or 0) / 180.0),
+        -1, 1
+    )
+    directional_pressure = clamp(
+        0.58 * buy_pressure + 0.42 * momentum, -1, 1
+    )
+
+    # Pool-specific calibration layer: current state -> Merton parameters.
+    # These are annualized parameters required by the continuous-time model.
+    dt = 15.0 / (365.0 * 24.0 * 60.0)
+    steps_per_year = 1.0 / dt
+
+    sigma_step = clamp(
+        0.003 +
+        0.010 * volume_force +
+        0.006 * activity_force +
+        0.004 * acceleration_force +
+        0.012 * liquidity_force +
+        0.006 * abs(momentum),
+        0.003, 0.045
+    )
+    sigma = sigma_step * math.sqrt(steps_per_year)
+
+    # Physical-measure drift estimate. Merton's compensator below removes the
+    # expected jump contribution, so mu remains the total expected drift.
+    mu_step = clamp(
+        0.0045 * directional_pressure +
+        0.0015 * buy_pressure * volume_force,
+        -0.008, 0.008
+    )
+    mu = mu_step * steps_per_year
+
+    # Merton jump parameters: Poisson intensity and lognormal jump size.
+    # The state layer only estimates them; the simulation uses the exact
+    # Poisson/lognormal structure from the model.
+    jump_prob_step = clamp(
+        0.008 * volume_force +
+        0.006 * acceleration_force +
+        0.010 * liquidity_force +
+        0.008 * abs(directional_pressure),
+        0, 0.035
+    )
+    lambda_year = -math.log(max(1e-12, 1.0 - jump_prob_step)) * steps_per_year
+    mu_j = clamp(0.012 * directional_pressure, -0.06, 0.06)
+    sigma_j = clamp(0.018 + 0.020 * liquidity_force, 0.018, 0.05)
+    kappa = math.exp(mu_j + 0.5 * sigma_j * sigma_j) - 1.0
+
+    rng = random.Random()
+    terminals = []
+    below = above = 0
+    first_escape_bars = []
+
+    for _ in range(max(1, int(paths))):
+        px = price
+        escaped = None
+        for bar in range(max(1, int(horizon_bars))):
+            # Standard Merton discretization:
+            # S(t+dt) = S(t) * exp((mu-lambda*kappa-0.5*sigma^2)dt
+            #                         + sigma*sqrt(dt)*Z) * product(Y_i)
+            n_jumps = _poisson_sample(rng, lambda_year * dt)
+            z = rng.gauss(0.0, 1.0)
+            log_return = (
+                (mu - lambda_year * kappa - 0.5 * sigma * sigma) * dt
+                + sigma * math.sqrt(dt) * z
+            )
+            if n_jumps:
+                for _jump in range(n_jumps):
+                    log_return += rng.gauss(mu_j, sigma_j)
+            px *= math.exp(log_return)
+
+            if escaped is None and (px < lower or px > upper):
+                escaped = bar + 1
+
+        terminals.append(px)
+        if px < lower:
+            below += 1
+        elif px > upper:
+            above += 1
+        if escaped is not None:
+            first_escape_bars.append(escaped)
+
+    terminals.sort()
+    n = len(terminals)
+    q = lambda p: terminals[min(n - 1, max(0, int(round((n - 1) * p))))]
+
+    p_below = below / n
+    p_above = above / n
+    result = {
+        "paths": n,
+        "horizon_bars": int(horizon_bars),
+        "horizon_minutes": int(horizon_bars) * 15,
+        "p_below": p_below,
+        "p_inside": max(0, 1 - p_below - p_above),
+        "p_above": p_above,
+        "p_out_of_range": p_below + p_above,
+        "p_survive_range": 0.0,
+        "expected_terminal_price": sum(terminals) / n,
+        "p05": q(0.05),
+        "p50": q(0.50),
+        "p95": q(0.95),
+        "current_price": price,
+        "historical_candles": 0,
+        "historical_source": "DexScreener live snapshot",
+        "model": "Merton 1976 jump-diffusion Monte Carlo",
+        "model_equation": "dS/S=(mu-lambda*kappa)dt+sigma*dW+(Y-1)dN",
+        "confidence": "LOW",
+        "inputs": {
+            "m5_pct": float(m5 or 0),
+            "h1_pct": float(h1 or 0),
+            "h6_pct": float(h6 or 0),
+            "h24_pct": float(h24 or 0),
+            "buy_ratio": buy_ratio,
+            "buy_pressure": buy_pressure,
+            "volume_force": volume_force,
+            "volume_24_liq": volume_24_liq,
+            "volume_acceleration": volume_acceleration,
+            "acceleration_force": acceleration_force,
+            "activity_force": activity_force,
+            "liquidity_force": liquidity_force,
+            "momentum": momentum,
+            "directional_pressure": directional_pressure,
+            "dt_years": dt,
+            "drift_annualized": mu,
+            "volatility_annualized": sigma,
+            "jump_intensity_annualized": lambda_year,
+            "jump_mean_log": mu_j,
+            "jump_volatility_log": sigma_j,
+            "jump_expected_multiplier_minus_one": kappa,
+            "jump_probability_per_step": jump_prob_step,
+            "drift_compensator_annualized": lambda_year * kappa,
+            "calibration": "Pool snapshot state -> Merton parameters"
+        },
+        "range": {"lower": lower, "upper": upper},
+    }
+    if first_escape_bars:
+        result["mean_first_escape_bars"] = sum(first_escape_bars) / len(first_escape_bars)
+        result["p_ever_out_of_range"] = len(first_escape_bars) / n
+    else:
+        result["mean_first_escape_bars"] = None
+        result["p_ever_out_of_range"] = 0.0
+    result["p_survive_range"] = 1.0 - result["p_ever_out_of_range"]
+    return result
+
+def dex_pair(pair_address):
+    """Fetch one live Solana pair directly from DexScreener."""
+    url = f"{DEX_URL}/latest/dex/pairs/solana/{urllib.parse.quote(str(pair_address), safe='')}"
+    data = get_json(url)
+    pairs = data.get("pairs") or []
+    if not pairs:
+        raise RuntimeError("Pair tidak ditemukan di DexScreener.")
+    # Prefer the exact pair address when the endpoint returns multiple markets.
+    for p in pairs:
+        if p.get("pairAddress") == pair_address:
+            return p
+    return pairs[0]
+
+
+def _live_range(price, h1, h6, h24):
+    """Conservative live range proxy using only current DexScreener movement."""
+    move = max(abs(h1) / 100, abs(h6) / 100, abs(h24) / 100, 0.01)
+    width = clamp(0.018 + 0.22 * move, 0.025, 0.55)
+    directional = clamp((0.45 * h1 + 0.30 * h6 + 0.25 * h24) / 100, -0.8, 0.8)
+    center = price * (1 - 0.08 * directional)
+    lower = center * (1 - width * (1 + max(directional, 0) * 0.20))
+    upper = center * (1 + width * (1 - max(-directional, 0) * 0.20))
+    return {
+        "lower": lower,
+        "center": center,
+        "upper": upper,
+        "width_pct": width,
+        "multipliers": {
+            "source": "DexScreener live proxy",
+            "movement": move,
+            "directional_bias": directional,
+        },
+    }
+
+
+def _live_analysis(p, strategy="balanced"):
+    """Run the same custom formulas on the live candidate snapshot."""
+    discovery_score, row = rank_pair(p, strategy)
+    return {
+        "formula_engine": FORMULA_ENGINE_VERSION,
+        "mode": "LIVE_SNAPSHOT",
+        "score": round(discovery_score, 2),
+        "fresh_score": round(row["fresh_score"], 2),
+        "lp_score": round(row["lp_score"], 2),
+        "meme_score": round(row["memecoin_score"], 2),
+        "lp_components": row["lp_components"],
+        "fresh_reasons": row["fresh_reasons"],
+        "meme_reasons": row["meme_reasons"],
+        "history_required": [
+            "ATR", "historical volatility", "volatility_ratio", "z_score",
+            "trend_strength", "entropy", "mean_reversion_force"
+        ],
+        "prediction_status": "LIVE_SNAPSHOT_MERTON_ACTIVE",
+        "prediction_note": "Monte Carlo aktif sebagai snapshot-state scenario model; historical calibration belum tersedia.",
+    }, row
+
+
+def _final_intelligence(p, row, mc, range_plan, strategy="balanced"):
+    """Single decision layer for the LP objective.
+
+    Scanner scores discovery only. This layer combines the live market state,
+    Merton range-survival scenario, LP quality proxies, and safety gates into
+    one human-facing decision. No historical OHLCV or Meteora bin metadata is
+    invented here.
+    """
+    lm = row["live_metrics"]
+    lp = float(row["lp_score"])
+    fee = float(row["lp_components"].get("fee_potential", 0))
+    range_quality = float(row["lp_components"].get("range_quality_proxy", 0))
+    directional_safety = float(row["lp_components"].get("directional_safety", 0))
+    inside = float(mc.get("p_survive_range", 1.0 - mc.get("p_ever_out_of_range", 1))) if mc else 0.0
+    escape = float(mc.get("p_ever_out_of_range", mc.get("p_out_of_range", 1))) if mc else 1.0
+    below = float(mc.get("p_below", 0)) if mc else 0.0
+    above = float(mc.get("p_above", 0)) if mc else 0.0
+
+    reasons = []
+    warnings = []
+    hard_wait = []
+
+    if lp < 50:
+        hard_wait.append("kualitas LP belum cukup")
+    if escape >= 0.35:
+        hard_wait.append("range terlalu mudah ditembus")
+    if inside < 0.55:
+        hard_wait.append("peluang bertahan di range rendah")
+    if directional_safety < 40:
+        hard_wait.append("gerakan terlalu satu arah")
+
+    if fee >= 70:
+        reasons.append("aktivitas volume mendukung peluang fee")
+    if inside >= 0.65:
+        reasons.append("sebagian besar simulasi bertahan di range")
+    elif inside >= 0.55:
+        reasons.append("peluang bertahan di range masih layak")
+    if directional_safety >= 70:
+        reasons.append("tekanan arah relatif aman")
+    if abs(above - below) < 0.12:
+        reasons.append("gerakan dua arah lebih cocok untuk LP")
+    if range_quality >= 70:
+        reasons.append("kualitas range mendukung fee capture")
+
+    h1 = float(lm.get("h1", 0))
+    h6 = float(lm.get("h6", 0))
+    h24 = float(lm.get("h24", 0))
+    if abs(h1) >= 20 or abs(h6) >= 50:
+        warnings.append("momentum sedang agresif")
+    if float(lm.get("volume_acceleration", 0)) >= 3:
+        warnings.append("volume sedang berakselerasi")
+    if float(lm.get("buy_ratio", 0.5)) >= 0.68 or float(lm.get("buy_ratio", 0.5)) <= 0.32:
+        warnings.append("arus buyer/seller terlalu berat sebelah")
+    if escape >= 0.25:
+        warnings.append("probabilitas range keluar mulai tinggi")
+
+    # The decision score is deliberately gated by survival. A high-fee,
+    # high-volatility pool must not win merely because it is active.
+    survival = clamp(100 * inside, 0, 100)
+    risk_safety = 100 * (1 - escape)
+    final_score = clamp(
+        0.28 * lp +
+        0.20 * fee +
+        0.18 * range_quality +
+        0.18 * survival +
+        0.16 * directional_safety,
+        0, 100
+    )
+
+    if hard_wait:
+        decision = "TUNGGU"
+        action_reason = " / ".join(hard_wait[:2])
+    elif escape >= 0.30 or float(row["risk"]["score"]) >= 60:
+        decision = "REBALANCE"
+        action_reason = "risiko range sudah meningkat"
+    elif final_score >= 70 and escape < 0.25 and inside >= 0.55:
+        decision = "MASUK"
+        action_reason = "fee opportunity cukup kuat dengan range yang masih bertahan"
+    else:
+        decision = "TUNGGU"
+        action_reason = "belum ada keunggulan yang cukup kuat"
+
+    # Rebalance has priority only when a position is assumed to already exist.
+    # For a fresh candidate, the same condition is presented as WAIT rather
+    # than pretending an LP position is currently open.
+    if decision == "REBALANCE" and not row.get("position_active", False):
+        decision = "TUNGGU"
+        action_reason = "range berisiko; jangan buka posisi baru sekarang"
+
+    regime = (
+        "EXTREME" if escape >= 0.35 or abs(h1) >= 25 else
+        "TRENDING" if abs(h1) >= 8 or abs(h6) >= 20 else
+        "CHOPPY" if abs(h1) <= 3 and abs(h6) <= 10 else
+        "NORMAL"
+    )
+
+    return {
+        "decision": decision,
+        "score": round(final_score, 2),
+        "regime": regime,
+        "action_reason": action_reason,
+        "reasons": reasons[:5],
+        "warnings": warnings[:5],
+        "gates": {
+            "lp_score": round(lp, 2),
+            "fee_opportunity": round(fee, 2),
+            "range_quality": round(range_quality, 2),
+            "directional_safety": round(directional_safety, 2),
+            "inside_probability": round(inside, 4),
+            "out_of_range_probability": round(escape, 4),
+            "risk_safety": round(risk_safety, 2),
+        },
+        "range": range_plan,
+        "probability": {
+            "below": below,
+            "inside": inside,
+            "above": above,
+            "ever_out_of_range": escape,
+            "p05": mc.get("p05") if mc else None,
+            "p50": mc.get("p50") if mc else None,
+            "p95": mc.get("p95") if mc else None,
+        },
+        "data_quality": {
+            "source": "DexScreener live snapshot",
+            "historical_candles": 0,
+            "confidence": "LOW",
+            "real_ohlcv_available": False,
+            "meteora_bin_metadata_available": False,
+            "fee_is_actual": False,
+        },
+        "strategy": str(strategy).upper(),
+    }
+
+
+def _live_review(pair, horizon_bars=96, mc_paths=2000):
+    """Run the complete live Pool Intelligence pipeline."""
+    p = dex_pair(pair)
+    analysis, row = _live_analysis(p)
+    ch = p.get("priceChange") or {}
+    vol = p.get("volume") or {}
+    tx = p.get("txns") or {}
+    liq = float((p.get("liquidity") or {}).get("usd") or 0)
+    price = float(p.get("priceUsd") or 0)
+    h1 = float(ch.get("h1") or 0)
+    m5 = float(ch.get("m5") or 0)
+    h6 = float(ch.get("h6") or 0)
+    h24 = float(ch.get("h24") or 0)
+    v1 = float(vol.get("h1") or 0)
+    v24 = float(vol.get("h24") or 0)
+    t1 = tx.get("h1") or {}
+    buys = int(t1.get("buys") or 0)
+    sells = int(t1.get("sells") or 0)
+    total_tx = buys + sells
+    buy_ratio = safe_div(buys, total_tx, 0.5)
+    vol_liq = safe_div(v1, liq, 0)
+    volume_24_liq = safe_div(v24, liq, 0)
+    volume_acceleration = safe_div(v1, max(v24 / 24.0, 1.0), 0)
+    volume_persistence = clamp(
+        0.55 * score01(volume_24_liq / 0.15) +
+        0.45 * score01(vol_liq / 0.03), 0, 1
+    )
+
+    range_plan = _live_range(price, h1, h6, h24)
+    mc = None
+    mc_error = None
+    try:
+        mc = snapshot_monte_carlo(
+            price, m5, h1, h6, h24, v1, v24, liq, buys, sells, total_tx,
+            range_plan["lower"], range_plan["upper"],
+            max(1, int(horizon_bars)), max(200, int(mc_paths))
+        )
+    except Exception as exc:
+        mc_error = str(exc)
+
+    # Keep the legacy risk fields for UI compatibility, but derive them from
+    # the same Monte Carlo result used by Final Intelligence.
+    mc_out = (
+        float(mc.get("p_ever_out_of_range", mc.get("p_out_of_range", 1)))
+        if mc else 1.0
+    )
+    liquidity_quality = score01(math.log1p(max(liq, 0)) / math.log1p(2_000_000))
+    directional = clamp(
+        0.42 * abs(h1) / 40 +
+        0.28 * abs(h6) / 80 +
+        0.20 * abs(h24) / 150 +
+        0.10 * abs(buy_ratio - 0.5) / 0.5, 0, 1
+    )
+    risk_score = clamp(100 * (
+        0.48 * mc_out +
+        0.22 * (1 - liquidity_quality) +
+        0.18 * score01(abs(h1) / 40) +
+        0.12 * abs(buy_ratio - 0.5) / 0.5
+    ), 0, 100)
+
+    row["live_metrics"] = {
+        "h1": h1, "h6": h6, "h24": h24, "m5": m5,
+        "v1": v1, "v24": v24, "liquidity": liq,
+        "buy_ratio": buy_ratio, "transactions_1h": total_tx,
+        "vol_liq": vol_liq, "volume_24_liq": volume_24_liq,
+        "volume_acceleration": volume_acceleration,
+        "volume_persistence": volume_persistence,
+        "price_usd": price, "buys_1h": buys, "sells_1h": sells,
+        "buy_pressure": round((buy_ratio - 0.5) * 2, 4),
+    }
+    row["risk"] = {"score": risk_score, "out_of_range": mc_out}
+
+    intelligence = _final_intelligence(
+        p, row, mc, range_plan, strategy=row.get("lp_strategy", "BALANCED")
+    )
+
+    # Final action for a fresh candidate can only be MASUK or TUNGGU.
+    # REBALANCE is exposed when the caller supplies an active position later.
+    rebalance_reasons = []
+    if mc_out >= 0.30:
+        rebalance_reasons.append("P(out-of-range) tinggi")
+    if risk_score >= 60:
+        rebalance_reasons.append("risiko pasar tinggi")
+    if abs(buy_ratio - 0.5) >= 0.25 and abs(h1) >= 8:
+        rebalance_reasons.append("tekanan arah kuat")
+    rebalance = bool(rebalance_reasons)
+
+    return {
+        "price": price,
+        "formula_engine": FORMULA_ENGINE_VERSION,
+        "regime": intelligence["regime"],
+        "analysis": analysis,
+        "intelligence": intelligence,
+        "decision": intelligence["decision"],
+        "confidence": "LOW · LIVE SNAPSHOT" if mc else "LIVE",
+        "data_source": "DexScreener",
+        "pair": p.get("pairAddress"),
+        "token": (p.get("baseToken") or {}).get("address"),
+        "dex": p.get("dexId"),
+        "math": {
+            "price": price, "atr": None, "atr_pct": None,
+            "volatility": None, "volatility_ratio": None, "z_score": None,
+            "trend_strength": None, "volume_pressure": round((buy_ratio - 0.5) * 2, 4),
+            "entropy": None, "liquidity_force": None,
+            "mean_reversion_force": None, "rvol": None,
+        },
+        "live_metrics": row["live_metrics"],
+        "range": range_plan,
+        "monte_carlo": mc,
+        "monte_carlo_status": "ACTIVE" if mc else "UNAVAILABLE",
+        "monte_carlo_error": mc_error,
+        "risk": {
+            "score": risk_score,
+            "out_of_range": mc_out,
+            "out_of_range_source": "MERTON_P_EVER_OUT_OF_RANGE" if mc else "UNAVAILABLE",
+            "il_proxy": None, "fee_yield": None, "fee_il_ratio": None,
+            "notes": [
+                "Risk, range, and decision use the same live snapshot state.",
+                "Historical OHLCV belum tersedia; ATR/Z-score/entropy asli tidak diisi.",
+                "Monte Carlo memakai Merton jump-diffusion dengan kalibrasi state live.",
+                "Fee opportunity adalah proxy turnover, bukan fee APR aktual.",
+            ],
+        },
+        "rebalance": {
+            "rebalance": rebalance,
+            "urgency": "HIGH" if mc_out >= 0.50 or risk_score >= 75 else "MEDIUM" if rebalance else "NONE",
+            "reasons": rebalance_reasons,
+        },
+        "history": 0,
+        "history_status": "NO_REAL_HISTORY",
+        "model_status": "FINAL_INTELLIGENCE_SNAPSHOT" if mc else "LIVE_ONLY",
+        "bin": None,
+        "bin_note": "Bin Meteora belum dihitung tanpa active bin + bin step metadata pool.",
+    }
+
+
+def scan(limit=40, only_meteora=False, strategy="balanced"):
+    """DexScreener meme-coin radar.
+
+    The scanner only discovers and displays candidates. All intelligence,
+    LP math and prediction happen later in Review.
+    """
+    limit = min(max(int(limit), 1), 100)
+    discovered, discovery_diag = fetch_search_pairs()
+
+    funnel = {
+        "discovered": len(discovered),
+        "solana": 0,
+        "meme": 0,
+        "age": 0,
+        "volume": 0,
+        "activity": 0,
+        "pump": 0,
+        "final": 0,
+        "discovery": discovery_diag,
+    }
+    by_token = {}
+
+    for p in discovered:
+        try:
+            if p.get("chainId") != "solana":
+                continue
+            funnel["solana"] += 1
+
+            base = p.get("baseToken") or {}
+            token = base.get("address")
+            symbol = str(base.get("symbol") or "").strip()
+            name = str(base.get("name") or "").strip()
+            if not token or not symbol:
+                continue
+
+            # The search query is the meme discovery mechanism.
+            # Do not apply a second heuristic meme-score gate here.
+            # DexScreener supplies the candidate; scanner only checks
+            # the basic live fields needed by the target radar.
+            funnel["meme"] += 1
+
+            # Discovery filter only: recent Solana pairs.
+            created = p.get("pairCreatedAt") or 0
+            age_h = max(
+                0.0,
+                (time.time() * 1000 - float(created)) / 3600000
+            ) if created else 9999.0
+            if not 0.25 <= age_h <= 168:
+                continue
+            funnel["age"] += 1
+
+            volume = p.get("volume") or {}
+            txns = p.get("txns") or {}
+            changes = p.get("priceChange") or {}
+
+            v1 = float(volume.get("h1") or 0)
+            v6 = float(volume.get("h6") or 0)
+            v24 = float(volume.get("h24") or 0)
+
+            h1tx = txns.get("h1") or {}
+            h6tx = txns.get("h6") or {}
+            h24tx = txns.get("h24") or {}
+
+            buys_1h = int(h1tx.get("buys") or 0)
+            sells_1h = int(h1tx.get("sells") or 0)
+            buys_6h = int(h6tx.get("buys") or 0)
+            sells_6h = int(h6tx.get("sells") or 0)
+            buys_24h = int(h24tx.get("buys") or 0)
+            sells_24h = int(h24tx.get("sells") or 0)
+
+            total_1h = buys_1h + sells_1h
+            total_6h = buys_6h + sells_6h
+            total_24h = buys_24h + sells_24h
+
+            # Do not rank or judge the token here. Just discard completely
+            # empty pairs so the dashboard does not show dead API records.
+            if max(v1, v6, v24) <= 0:
+                continue
+            funnel["volume"] += 1
+
+            if max(total_1h, total_6h, total_24h) <= 0:
+                continue
+            funnel["activity"] += 1
+
+            h1 = float(changes.get("h1") or 0)
+            h6 = float(changes.get("h6") or 0)
+            h24 = float(changes.get("h24") or 0)
+            if max(h1, h6, h24) > 0:
+                funnel["pump"] += 1
+
+            liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
+            price = float(p.get("priceUsd") or 0)
+            buy_ratio_1h = safe_div(buys_1h, total_1h, 0.5)
+
+            meme_score, meme_reasons = memecoin_score(p)
+
+            row = {
+                "token": token,
+                "base": symbol,
+                "name": name,
+                "quote": (p.get("quoteToken") or {}).get("symbol"),
+                "pair": p.get("pairAddress"),
+                "dex": p.get("dexId"),
+                "url": p.get("url"),
+                "price": price,
+                "age_h": round(age_h, 2),
+                "age_days": round(age_h / 24, 2),
+                "volume_1h": v1,
+                "volume_6h": v6,
+                "volume_24h": v24,
+                "buys_1h": buys_1h,
+                "sells_1h": sells_1h,
+                "buys_6h": buys_6h,
+                "sells_6h": sells_6h,
+                "buys_24h": buys_24h,
+                "sells_24h": sells_24h,
+                "transactions_1h": total_1h,
+                "transactions_6h": total_6h,
+                "transactions_24h": total_24h,
+                "buy_ratio_1h": round(buy_ratio_1h, 4),
+                "liquidity": liquidity,
+                "h1": h1,
+                "h6": h6,
+                "h24": h24,
+                "meme_score": round(meme_score, 2),
+                "meme_reasons": meme_reasons,
+                "pump_signal": max(h1, h6, h24) > 0,
+                "pump_window": (
+                    "1H" if h1 > 0 else
+                    "6H" if h6 > 0 else
+                    "24H" if h24 > 0 else None
+                ),
+                "scan_tier": "DEXSCREENER_MEME_DISCOVERY",
+                "scanner_role": "FILTER_ONLY",
+                "source": "DexScreener",
+                "history_available": False,
+                "data_confidence": "LIVE",
+                "meteora": str(p.get("dexId") or "").lower() in {
+                    "meteora", "meteora-dlmm", "meteora-dlmm2"
+                },
+                "gmgn_url": gmgn_url(token),
+            }
+
+            if only_meteora and not row["meteora"]:
+                continue
+
+            # One visible row per token. Keep the pair with the most recent
+            # live activity, but do not convert it into an intelligence score.
+            old = by_token.get(token)
+            new_key = (total_1h, v1, total_6h, v6, v24)
+            old_key = (
+                old["transactions_1h"],
+                old["volume_1h"],
+                old["transactions_6h"],
+                old["volume_6h"],
+                old["volume_24h"],
+            ) if old else None
+            if old is None or new_key > old_key:
+                by_token[token] = row
+
+        except Exception:
+            continue
+
+    rows = sorted(
+        by_token.values(),
+        key=lambda x: (
+            x["transactions_1h"],
+            x["volume_1h"],
+            x["transactions_6h"],
+            x["volume_6h"],
+            x["volume_24h"],
+        ),
+        reverse=True,
+    )[:limit]
+
+    funnel["final"] = len(rows)
+
+    return {
+        "generated_at": int(time.time()),
+        "count": len(rows),
+        "rows": rows,
+        "source": "DexScreener" if rows else "none",
+        "filters": {
+            "discovery_source": "DexScreener API",
+            "age_hours_min": 0.25,
+            "age_hours_max": 168,
+            "meme_identity_required": "DexScreener search discovery",
+            "requires_live_volume": True,
+            "requires_live_activity": True,
+            "scanner_role": "FILTER_ONLY",
+        },
+        "funnel": funnel,
+        "discovery_status": (
+            "OK" if discovery_diag.get("solana_pairs", 0)
+            else "NO_SOLANA_PAIRS"
+        ),
+    }
+
+
+def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
+    """Review a pool from live DexScreener data without historical OHLCV."""
+    return _live_review(pair_address, horizon_bars=horizon_bars, mc_paths=mc_paths)
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=40)
+    ap.add_argument("--meteora", action="store_true")
+    ap.add_argument("--strategy", choices=["conservative", "balanced", "aggressive"], default="balanced")
+    a = ap.parse_args()
+    print(json.dumps(scan(a.limit, a.meteora, a.strategy), indent=2))
