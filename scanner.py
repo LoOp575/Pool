@@ -705,7 +705,7 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
                                 max(1, int(horizon_bars)), max(200, int(mc_paths)))
     except Exception as exc:
         mc_error=str(exc)
-    mc_out = float(mc.get("p_out_of_range", 0)) if mc else None
+    mc_out = float(mc.get("p_ever_out_of_range", mc.get("p_out_of_range", 0))) if mc else None
     out_proxy = mc_out if mc_out is not None else clamp(
         0.45 * abs(h1) / 100 +
         0.35 * abs(h6) / 100 +
@@ -760,7 +760,7 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
         "risk": {
             "score": risk_score,
             "out_of_range": out_proxy,
-            "out_of_range_source": "MERTON_MONTE_CARLO" if mc else "LIVE_MOVEMENT_PROXY",
+            "out_of_range_source": "MERTON_P_EVER_OUT_OF_RANGE" if mc else "LIVE_MOVEMENT_PROXY",
             "il_proxy": None,
             "fee_yield": None,
             "fee_il_ratio": None,
