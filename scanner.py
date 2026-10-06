@@ -343,7 +343,7 @@ def post_pump_profile(pool_address, age_h):
     - volume_acceleration: recent hourly volume vs earlier baseline
     """
     candles = fetch_hourly_ohlcv(pool_address, 200)
-    if len(candles) < 24:
+    if len(candles) < 8:
         return None
 
     closes = [max(float(c["close"]), 0) for c in candles]
@@ -358,7 +358,7 @@ def post_pump_profile(pool_address, age_h):
     for i in range(1, len(closes)):
         if closes[i] > 0 and pre_low > 0:
             gain = closes[i] / pre_low - 1
-            if gain > pump_pct and i >= 6:
+            if gain > pump_pct and i >= 2:
                 pump_pct = gain
                 peak_i = i
         pre_low = min(pre_low, closes[i])
@@ -431,7 +431,7 @@ def enrich_post_pump(rows):
         age_h = row.get("age_h", 999)
         v24 = row.get("v24", 0)
         liq = row.get("liquidity", 0)
-        if 24 <= age_h <= 168 and v24 >= max(10_000, liq * 0.05) and row.get("pair"):
+        if 24 <= age_h <= 168 and v24 >= max(3_000, liq * 0.015) and row.get("pair"):
             shortlist.append(row)
 
     def one(row):
@@ -477,16 +477,15 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
     # already pumped and still has meaningful post-pump volume.
     enriched = enrich_post_pump(candidates)
     candidates = []
+    enriched_pairs = {x.get("pair") for x in enriched}
     for row in enriched:
         if row.get("pump_pct", 0) < 0.30:
             continue
-        if row.get("volume_persistence", 0) < 0.35:
+        if row.get("volume_persistence", 0) < 0.20:
             continue
         if row.get("pump_stage") == "FADE":
             continue
         if row.get("pump_stage") == "RUNAWAY":
-            # Keep it visible, but penalize it because concentrated LP is
-            # vulnerable while price is still escaping upward.
             row["post_pump_score"] *= 0.70
         row["score"] = clamp(
             0.68 * row["lp_score"] +
@@ -495,6 +494,35 @@ def scan(limit=40,only_meteora=False,strategy="balanced"):
         )
         row["post_pump_edge"] = round(row["post_pump_score"], 2)
         candidates.append(row)
+
+    # History can be temporarily unavailable. Keep a lower-confidence
+    # CURRENT_24H fallback instead of returning an empty scanner.
+    historical_pairs = {x.get("pair") for x in candidates}
+    for p in fetch_search_pairs():
+        try:
+            meme_score,_ = memecoin_score(p)
+            if meme_score < 35:
+                continue
+            _, row = rank_pair(p, strategy)
+            age_h = row.get("age_h", 999)
+            h24 = row.get("h24", 0)
+            if not (24 <= age_h <= 168 and h24 >= 30):
+                continue
+            if row.get("liquidity", 0) < 500 or row.get("pair") in historical_pairs:
+                continue
+            row["source"] = "DexScreener"
+            row["pump_pct"] = max(0, h24 / 100)
+            row["drawdown_from_peak"] = 0
+            row["pump_age_h"] = 0
+            row["volume_persistence"] = 0
+            row["volume_acceleration"] = 0
+            row["pump_stage"] = "CURRENT_24H"
+            row["post_pump_score"] = clamp(0.55 * row["lp_score"] + 0.45 * meme_score, 0, 100)
+            row["post_pump_edge"] = round(row["post_pump_score"], 2)
+            row["score"] = clamp(0.78 * row["lp_score"] + 0.22 * row["post_pump_score"], 0, 100)
+            candidates.append(row)
+        except Exception:
+            continue
 
     by_token={}
     for x in candidates:
@@ -569,7 +597,7 @@ def fetch_ohlcv(pool_address, limit=200):
                     "close": float(close),
                     "volume": float(volume),
                 })
-            if len(candles) >= 20:
+            if len(candles) >= 8:
                 return list(reversed(candles))
         except Exception:
             pass
