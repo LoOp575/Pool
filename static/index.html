@@ -27,7 +27,7 @@ table{width:100%;border-collapse:collapse}th{text-align:left;color:#667680;font-
 .heat{display:grid;grid-template-columns:1.2fr repeat(3,1fr);gap:3px}.heat div{background:#0f171e;padding:6px;border-radius:4px}.barline{height:5px;background:#1a242c;border-radius:4px;overflow:hidden}.barline i{display:block;height:100%;background:var(--green)}
 .radar{height:190px;position:relative;border:1px solid var(--line);border-radius:6px;background:#0a1117;overflow:hidden}.radar:before,.radar:after{content:"";position:absolute;border:1px solid #1b2a33;border-radius:50%;inset:18%}.radar:after{inset:38%}.axisx,.axisy{position:absolute;background:#1b2a33}.axisx{height:1px;left:7%;right:7%;top:50%}.axisy{width:1px;top:7%;bottom:7%;left:50%}.dot{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--green);cursor:pointer}.dot.risk{background:var(--red)}.dot.warn{background:var(--yellow)}
 .axislabel{position:absolute;color:#596b76;font-size:8px}.toplab{top:5px;left:50%;transform:translateX(-50%)}.botlab{bottom:5px;left:50%;transform:translateX(-50%)}.leftlab{left:5px;top:50%}.rightlab{right:5px;top:50%}
-.rangebox{padding:8px;border:1px solid var(--line);border-radius:6px;background:#0a1117}.rangebar{height:26px;position:relative;margin:7px 3px;background:#151f27;border-radius:4px}.rangeactive{position:absolute;left:18%;right:17%;top:4px;height:18px;border:1px solid #46d89a66;background:#46d89a12;border-radius:3px}.marker{position:absolute;top:0;height:26px;width:1px;background:#cbd6dc}.marker span{position:absolute;top:29px;transform:translateX(-50%);font-size:8px;color:var(--muted);white-space:nowrap}
+.rangebox{padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#0a1117}.rangebar{height:16px;position:relative;margin:5px 10px 23px;background:#151f27;border-radius:3px}.rangeactive{position:absolute;left:12%;right:12%;top:3px;height:10px;border:1px solid #46d89a66;background:#46d89a12;border-radius:2px}.marker{position:absolute;top:-2px;height:20px;width:1px;background:#cbd6dc}.marker span{position:absolute;top:21px;transform:translateX(-50%);font-size:7px;color:var(--muted);white-space:nowrap}
 .prob{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.prob div{background:#0f171e;border:1px solid #18242d;padding:7px;border-radius:5px;text-align:center}.prob h3{margin:4px 0 0;font-size:16px}
 .reason{padding:6px 0;border-bottom:1px solid #151e26}.reason:last-child{border:0}.dotmini{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--green);margin-right:5px}
 .empty{text-align:center;padding:20px;color:var(--muted)}
@@ -239,10 +239,10 @@ function renderReview(d,name){
    reason(Math.abs(balance)<0.12,'Gerakan '+(Math.abs(balance)<0.12?'dua arah':'satu arah'),Math.abs(balance)<0.12?'Tekanan naik dan turun relatif seimbang.':'Gerakan satu arah membuat range lebih cepat tertinggal.')+
  '</div>'+
  '<div class="card"><div class="section-title">RANGE LP · AREA FEE</div>'+
-   '<div class="value">'+px(lo)+' → '+px(hi)+'</div>'+
-   '<div class="sub">Lebar '+num(r.width_pct,1)+'% · harga sekarang berada di '+num(position,0)+'% area range</div>'+
-   '<div class="rangebox" style="margin-top:12px"><div class="rangebar" style="margin-bottom:34px"><div style="position:absolute;left:0;right:0;top:4px;height:18px;border:1px solid #46d89a66;background:#46d89a12;border-radius:3px"></div><div class="marker" style="left:'+position+'%"><span>SEKARANG</span></div></div></div>'+
-   '<div class="pulse-row"><span>Potensi range jebol</span><b class="'+rangeCls+'">'+pct01(escape)+'</b></div>'+
+   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div class="value" style="font-size:16px">'+px(lo)+' → '+px(hi)+'</div><span class="sub">Lebar '+num(r.width_pct,1)+'%</span></div>'+
+   '<div class="rangebox" style="margin-top:9px"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:'+position+'%"><span>SEKARANG</span></div></div><div style="display:flex;justify-content:space-between;font-size:7px;color:var(--muted)"><span>BAWAH</span><span>ATAS</span></div></div>'+
+   '<div class="pulse-row" style="margin-top:5px"><span>Posisi harga dalam range</span><b>'+num(position,0)+'%</b></div>'+
+   '<div class="pulse-row"><span>Potensi range jebol</span><b class="'+rangeCls+'">'+pct01(escape)+'</b></div>+
    '<div class="pulse-row"><span>Perkiraan waktu jebol</span><b>'+escapeText+'</b></div>'+
  '</div>'+
  '</div>'+
