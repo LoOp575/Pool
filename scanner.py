@@ -690,7 +690,7 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
         mc=snapshot_monte_carlo(price,float(ch.get("m5") or 0),h1,h6,h24,
                                 v1,v24,liq,buys,sells,total_tx,
                                 range_plan["lower"],range_plan["upper"],
-                                max(1, int(horizon_bars)), max(200, int(mc_paths))
+                                max(1, int(horizon_bars)), max(200, int(mc_paths)))
     except Exception as exc:
         mc_error=str(exc)
     mc_out = float(mc.get("p_out_of_range", 0)) if mc else None
