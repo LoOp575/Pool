@@ -23,7 +23,7 @@ def pct(x):return float(x or 0)
 def score01(x):return clamp(float(x),0,1)
 def safe_div(a,b,d=0):return a/b if b else d
 
-FORMULA_ENGINE_VERSION = "POOL-INTEL-1"
+FORMULA_ENGINE_VERSION = "POOL-INTEL-2"
 
 
 def fetch_seed_tokens():
@@ -621,15 +621,15 @@ def _live_analysis(p, strategy="balanced"):
         "fresh_reasons": row["fresh_reasons"],
         "meme_reasons": row["meme_reasons"],
         "history_required": [
-            "ATR", "volatility", "volatility_ratio", "z_score",
-            "trend_strength", "entropy", "mean_reversion_force",
-            "Monte Carlo", "probability_out_of_range"
+            "ATR", "historical volatility", "volatility_ratio", "z_score",
+            "trend_strength", "entropy", "mean_reversion_force"
         ],
-        "prediction_status": "WAITING_FOR_REAL_CANDLES",
+        "prediction_status": "LIVE_SNAPSHOT_MERTON_ACTIVE",
+        "prediction_note": "Monte Carlo aktif sebagai snapshot-state scenario model; historical calibration belum tersedia.",
     }, row
 
 
-def _live_review(pair):
+def _live_review(pair, horizon_bars=96, mc_paths=2000):
     p=dex_pair(pair)
     analysis,row=_live_analysis(p)
     mc=None
@@ -650,6 +650,12 @@ def _live_review(pair):
     total_tx = buys + sells
     buy_ratio = safe_div(buys, total_tx, 0.5)
     vol_liq = safe_div(v1, liq, 0)
+    volume_24_liq = safe_div(v24, liq, 0)
+    volume_acceleration = safe_div(v1, max(v24 / 24.0, 1.0), 0)
+    volume_persistence = clamp(
+        0.55 * score01(volume_24_liq / 0.15) +
+        0.45 * score01(vol_liq / 0.03), 0, 1
+    )
 
     directional = clamp(
         0.42 * abs(h1) / 40 +
@@ -659,7 +665,10 @@ def _live_review(pair):
     )
     activity = score01(math.log1p(total_tx) / math.log1p(1000))
     liquidity_quality = score01(math.log1p(max(liq, 0)) / math.log1p(2_000_000))
-    fee_potential = score01(math.log1p(max(vol_liq, 0)) / math.log1p(20))
+    fee_potential = score01(
+        0.70 * math.log1p(max(vol_liq, 0)) / math.log1p(20) +
+        0.30 * math.log1p(max(volume_24_liq, 0)) / math.log1p(60)
+    )
     risk_score = clamp(100 * (
         0.48 * directional +
         0.22 * (1 - liquidity_quality) +
@@ -680,10 +689,12 @@ def _live_review(pair):
     try:
         mc=snapshot_monte_carlo(price,float(ch.get("m5") or 0),h1,h6,h24,
                                 v1,v24,liq,buys,sells,total_tx,
-                                range_plan["lower"],range_plan["upper"],96,2000)
+                                range_plan["lower"],range_plan["upper"],
+                                max(1, int(horizon_bars)), max(200, int(mc_paths))
     except Exception as exc:
         mc_error=str(exc)
-    out_proxy = clamp(
+    mc_out = float(mc.get("p_out_of_range", 0)) if mc else None
+    out_proxy = mc_out if mc_out is not None else clamp(
         0.45 * abs(h1) / 100 +
         0.35 * abs(h6) / 100 +
         0.20 * abs(h24) / 100, 0, 0.95
@@ -696,7 +707,7 @@ def _live_review(pair):
         "formula_engine": FORMULA_ENGINE_VERSION,
         "regime": regime,
         "analysis": analysis,
-        "confidence": "HISTORICAL+LIVE" if mc else "LIVE",
+        "confidence": "LOW · LIVE SNAPSHOT" if mc else "LIVE",
         "data_source": "DexScreener",
         "pair": p.get("pairAddress"),
         "token": (p.get("baseToken") or {}).get("address"),
@@ -722,7 +733,13 @@ def _live_review(pair):
             "buy_ratio": buy_ratio,
             "transactions_1h": total_tx,
             "vol_liq": vol_liq,
+            "volume_24_liq": volume_24_liq,
+            "volume_acceleration": volume_acceleration,
+            "volume_persistence": volume_persistence,
             "price_usd": price,
+            "buys_1h": buys,
+            "sells_1h": sells,
+            "buy_pressure": round((buy_ratio - 0.5) * 2, 4),
         },
         "range": range_plan,
         "monte_carlo": mc,
@@ -731,14 +748,15 @@ def _live_review(pair):
         "risk": {
             "score": risk_score,
             "out_of_range": out_proxy,
+            "out_of_range_source": "MERTON_MONTE_CARLO" if mc else "LIVE_MOVEMENT_PROXY",
             "il_proxy": None,
             "fee_yield": None,
             "fee_il_ratio": None,
             "notes": [
                 "Risk memakai data live DexScreener.",
                 "Historical volatility belum tersedia dari DexScreener.",
-                "Monte Carlo memakai snapshot DexScreener, bukan OHLCV historis.",
-                "Confidence Monte Carlo: LOW."
+                "Monte Carlo memakai Merton jump-diffusion pada state live, bukan OHLCV historis.",
+                "Parameter Merton dikalibrasi heuristik dari state live; confidence LOW.",
             ],
         },
         "rebalance": {
@@ -753,7 +771,8 @@ def _live_review(pair):
             ),
         },
         "history": int(mc.get("historical_candles",0)) if mc else 0,
-        "history_status": "SNAPSHOT_MODEL" if mc else "NO_REAL_HISTORY",
+        "history_status": "NO_REAL_HISTORY",
+        "model_status": "SNAPSHOT_SCENARIO" if mc else "LIVE_ONLY",
         "bin": None,
         "bin_note": "Active bin + bin step harus diambil dari metadata pool Meteora sebelum bin ID dihitung.",
     }
@@ -872,8 +891,9 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                     0.55*score01(v24/max(liq*0.15,1))+
                     0.45*score01(v1/max(liq*0.03,1)),0,1),3)
                 row["pump_pct"]=max(0,h24/100)
-                row["drawdown_from_peak"]=0
-                row["pump_age_h"]=0
+                row["pump_measurement"]="24H_CHANGE_PROXY"
+                row["drawdown_from_peak"]=None
+                row["pump_age_h"]=None
                 row["pump_stage"]="FALLBACK_DISCOVERY"
                 row["post_pump_score"]=row["fresh_score"]
                 row["post_pump_edge"]=round(row["fresh_score"],2)
@@ -911,9 +931,9 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
         "funnel":funnel,
     }
 
-def review_pair(pair_address, fee_apr=0, horizon_bars=24, mc_paths=1500):
+def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
     """Review a pool from live DexScreener data without historical OHLCV."""
-    return _live_review(pair_address)
+    return _live_review(pair_address, horizon_bars=horizon_bars, mc_paths=mc_paths)
 
 
 if __name__ == "__main__":
