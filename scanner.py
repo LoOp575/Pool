@@ -383,44 +383,49 @@ def fetch_search_pairs():
 
 
 
-def snapshot_monte_carlo(price, m5, h1, h6, h24, lower, upper, horizon_bars=96, paths=2000):
-    """DexScreener-only forward scenario model. No fabricated historical candles."""
-    if price <= 0:
-        raise ValueError("Harga live tidak valid.")
-    windows=[
-        (float(m5 or 0)/100.0,1.0/3.0,0.35),
-        (float(h1 or 0)/100.0,4.0,0.30),
-        (float(h6 or 0)/100.0,24.0,0.20),
-        (float(h24 or 0)/100.0,96.0,0.15)]
-    vals=[(math.log(max(1.0+r,1e-6))/bars,w) for r,bars,w in windows]
-    sw=sum(w for _,w in vals)
-    mu=safe_div(sum(x*w for x,w in vals),sw,0.0)
-    variance=safe_div(sum(w*(x-mu)**2 for x,w in vals),sw,0.0)
-    sigma=clamp(math.sqrt(max(variance,0.0)),0.002,0.08)
-    mu=clamp(mu,-0.025,0.025)
-    rng=random.Random()
-    terminals=[]; below=above=0
+def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidity,
+                          buys, sells, transactions, lower, upper, horizon_bars=96, paths=2000):
+    """DexScreener-only factor Monte Carlo. Uses live market state, not candles."""
+    if price <= 0: raise ValueError("Harga live tidak valid.")
+    total=max(1,int(buys)+int(sells))
+    buy_ratio=clamp(safe_div(buys,total,0.5),0,1)
+    buy_pressure=(buy_ratio-0.5)*2.0
+    volume_liq=safe_div(float(volume_1h or 0),max(float(liquidity or 0),1),0)
+    volume_force=score01(math.log1p(max(volume_liq,0))/math.log1p(20))
+    activity_force=score01(math.log1p(max(int(transactions),0))/math.log1p(1000))
+    liquidity_force=1-score01(math.log1p(max(float(liquidity or 0),0))/math.log1p(2_000_000))
+    momentum=clamp(0.40*math.tanh(float(m5 or 0)/8.0)+0.30*math.tanh(float(h1 or 0)/25.0)+
+                    0.20*math.tanh(float(h6 or 0)/60.0)+0.10*math.tanh(float(h24 or 0)/180.0),-1,1)
+    directional_pressure=clamp(0.58*buy_pressure+0.42*momentum,-1,1)
+    base_step=0.003+0.010*volume_force+0.006*activity_force+0.012*liquidity_force
+    sigma=clamp(base_step+0.006*abs(momentum),0.003,0.045)
+    jump_risk=clamp(0.010*volume_force+0.012*liquidity_force+0.008*abs(directional_pressure),0,0.035)
+    mu=clamp(0.0045*directional_pressure+0.0015*buy_pressure*volume_force,-0.008,0.008)
+    rng=random.Random(); terminals=[]; below=above=0
     for _ in range(max(1,int(paths))):
         px=price
         for _bar in range(max(1,int(horizon_bars))):
-            px*=math.exp(rng.gauss(mu,sigma))
+            shock=rng.gauss(0,sigma)
+            if rng.random()<jump_risk:
+                shock+=rng.gauss(directional_pressure*0.012,0.018+0.020*liquidity_force)
+            px*=math.exp(mu+shock)
         terminals.append(px)
         if px<lower: below+=1
         elif px>upper: above+=1
     terminals.sort(); n=len(terminals)
     q=lambda p: terminals[min(n-1,max(0,int(round((n-1)*p))))]
     p_below=below/n; p_above=above/n
-    return {
-        "paths":n,"horizon_bars":int(horizon_bars),"horizon_minutes":int(horizon_bars)*15,
-        "p_below":p_below,"p_inside":max(0,1-p_below-p_above),"p_above":p_above,
-        "p_out_of_range":p_below+p_above,"expected_terminal_price":sum(terminals)/n,
-        "p05":q(.05),"p50":q(.50),"p95":q(.95),"current_price":price,
-        "historical_candles":0,"historical_source":"DexScreener snapshot model",
-        "model":"15m snapshot Monte Carlo","confidence":"LOW",
-        "inputs":{"m5_pct":float(m5 or 0),"h1_pct":float(h1 or 0),"h6_pct":float(h6 or 0),
-                  "h24_pct":float(h24 or 0),"drift_per_15m":mu,"volatility_per_15m":sigma},
-        "range":{"lower":lower,"upper":upper}}
-
+    return {"paths":n,"horizon_bars":int(horizon_bars),"horizon_minutes":int(horizon_bars)*15,
+            "p_below":p_below,"p_inside":max(0,1-p_below-p_above),"p_above":p_above,
+            "p_out_of_range":p_below+p_above,"expected_terminal_price":sum(terminals)/n,
+            "p05":q(.05),"p50":q(.50),"p95":q(.95),"current_price":price,
+            "historical_candles":0,"historical_source":"DexScreener live snapshot",
+            "model":"factor-state Monte Carlo","confidence":"LOW",
+            "inputs":{"m5_pct":float(m5 or 0),"h1_pct":float(h1 or 0),"h6_pct":float(h6 or 0),"h24_pct":float(h24 or 0),
+                      "buy_ratio":buy_ratio,"buy_pressure":buy_pressure,"volume_force":volume_force,
+                      "activity_force":activity_force,"liquidity_force":liquidity_force,"momentum":momentum,
+                      "directional_pressure":directional_pressure,"drift_per_step":mu,"volatility_per_step":sigma,
+                      "jump_risk":jump_risk},"range":{"lower":lower,"upper":upper}}
 def dex_pair(pair_address):
     """Fetch one live Solana pair directly from DexScreener."""
     url = f"{DEX_URL}/latest/dex/pairs/solana/{urllib.parse.quote(str(pair_address), safe='')}"
@@ -528,6 +533,7 @@ def _live_review(pair):
     range_plan = _live_range(price, h1, h6, h24)
     try:
         mc=snapshot_monte_carlo(price,float(ch.get("m5") or 0),h1,h6,h24,
+                                v1,v24,liq,buys,sells,total_tx,
                                 range_plan["lower"],range_plan["upper"],96,2000)
     except Exception as exc:
         mc_error=str(exc)
