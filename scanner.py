@@ -956,6 +956,8 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
         "activity": 0,
         "pump": 0,
         "final": 0,
+        "row_errors": 0,
+        "row_error_samples": [],
         "discovery": discovery_diag,
     }
     by_token = {}
@@ -1098,7 +1100,12 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             if old is None or new_key > old_key:
                 by_token[token] = row
 
-        except Exception:
+        except Exception as exc:
+            # Keep scanning remaining candidates while exposing bounded
+            # diagnostics instead of silently dropping malformed pairs.
+            funnel["row_errors"] += 1
+            if len(funnel["row_error_samples"]) < 8:
+                funnel["row_error_samples"].append(str(exc)[:180])
             continue
 
     rows = sorted(
