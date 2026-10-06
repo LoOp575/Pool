@@ -79,6 +79,8 @@ class BinLiquidity:
 class MonteCarloResult:
     paths:int; horizon_bars:int; p_below:float; p_above:float; p_out_of_range:float
     expected_terminal_price:float; p5:float; p50:float; p95:float
+    # Rata-rata bar pertama saat boundary tersentuh (None bila tak pernah keluar).
+    mean_first_escape_bars:float|None=None
 @dataclass
 class RiskPlan:
     risk_score:float; probability_out_of_range:float; il_proxy:float
@@ -125,16 +127,25 @@ def range_engine(m,regime,closes):
     mrw=clamp(abs(m.mean_reversion_force),0,.75); center=m.price*(1-mrw)+fair*mrw
     tm={Regime.CHOPPY:.85,Regime.NORMAL:1,Regime.TRENDING:1.30,Regime.EXTREME:1.65}[regime]
     vm=clamp(.85+.35*m.volatility_ratio,.75,1.70); em=.80+.65*m.entropy; mm=1-.22*abs(m.mean_reversion_force)
-    width=m.atr_pct*tm*vm*em*mm
+    # ATR% memecoin bisa menembus 100%+. Tanpa batas, width>1 membuat lower price negatif
+    # dan bin_engine gagal di math.log. Width dibatasi agar range selalu valid (lower > 0).
+    raw_width=m.atr_pct*tm*vm*em*mm
+    width=clamp(raw_width,.01,.90)
     skew=clamp(.12*(m.volume_pressure+m.liquidity_force),-.20,.20)
-    lower=center*(1-width*(1+skew)); upper=center*(1+width*(1-skew))
-    return RangePlan(center,lower,upper,width,{"atr_pct":m.atr_pct,"trend":tm,"volatility":vm,"entropy":em,"mean_reversion":mm,"directional_skew":skew})
+    lo_f=clamp(width*(1+skew),.01,.95); hi_f=clamp(width*(1-skew),.01,.95)
+    lower=center*(1-lo_f); upper=center*(1+hi_f)
+    multipliers={"atr_pct":m.atr_pct,"trend":tm,"volatility":vm,"entropy":em,"mean_reversion":mm,
+                 "directional_skew":skew,"raw_width":raw_width}
+    if raw_width!=width: multipliers["width_clamped_from"]=raw_width
+    return RangePlan(center,lower,upper,width,multipliers)
 
 def price_at_bin(active_price,active_bin,bin_id,step_bps):
     return active_price*(1+step_bps/10000)**(bin_id-active_bin)
 
 def bin_engine(r,pool):
     if pool.bin_step_bps<=0: raise ValueError("bin_step_bps must be > 0")
+    if r.center_price<=0 or r.lower_price<=0 or r.upper_price<=0:
+        raise ValueError("range price harus > 0 (cek range_engine / ATR%)")
     step=math.log1p(pool.bin_step_bps/10000)
     lo=pool.active_bin_id+math.floor(math.log(r.lower_price/r.center_price)/step)
     hi=pool.active_bin_id+math.ceil(math.log(r.upper_price/r.center_price)/step)
@@ -164,21 +175,28 @@ def liquidity_distribution(b,m,distribution,max_bins=201):
     return out
 
 def bootstrap_monte_carlo(closes,lower,upper,horizon_bars=24,paths=2000,seed=7):
-    """Bootstrap future log-returns and measure true range survival."""
-    rs=log_returns(closes); rng=random.Random(seed); terminals=[]; below=above=out=0
+    """Bootstrap future log-returns and measure true range survival.
+
+    p_below / p_above are TERMINAL probabilities (price at horizon) so that
+    p_below + p_inside + p_above == 1, matching the Merton snapshot engine.
+    p_out_of_range is the probability of ever touching a boundary during the
+    horizon, which is the number the risk / rebalance engines consume.
+    mean_first_escape_bars reports the average first-touch timing (bars).
+    """
+    rs=log_returns(closes); rng=random.Random(seed); terminals=[]; below=above=0; escapes=[]
     for _ in range(paths):
-        p=closes[-1]; mn=mx=p
-        for _ in range(horizon_bars):
-            p*=math.exp(rng.choice(rs)); mn=min(mn,p); mx=max(mx,p)
+        p=closes[-1]; escape=None
+        for step in range(1,horizon_bars+1):
+            p*=math.exp(rng.choice(rs))
+            if escape is None and (p<lower or p>upper): escape=step
         terminals.append(p)
-        hit_below=mn<lower
-        hit_above=mx>upper
-        below += hit_below
-        above += hit_above
-        out += hit_below or hit_above
+        if escape is not None: escapes.append(escape)
+        if p<lower: below+=1
+        elif p>upper: above+=1
     terminals.sort(); n=len(terminals)
-    return MonteCarloResult(paths,horizon_bars,below/n,above/n,out/n,mean(terminals),
-                            terminals[max(0,int(.05*n)-1)],terminals[max(0,int(.50*n)-1)],terminals[max(0,int(.95*n)-1)])
+    return MonteCarloResult(paths,horizon_bars,below/n,above/n,len(escapes)/n,mean(terminals),
+                            terminals[max(0,int(.05*n)-1)],terminals[max(0,int(.50*n)-1)],terminals[max(0,int(.95*n)-1)],
+                            mean(escapes) if escapes else None)
 
 def risk_engine(m,r,mc,fee_apr=0,horizon_days=1):
     q=safe_div(mc.expected_terminal_price,r.center_price,1); il=2*math.sqrt(q)/(1+q)-1
@@ -206,11 +224,13 @@ def choose_distribution(m,regime):
     if regime==Regime.TRENDING or abs(m.volume_pressure)>.65:return Distribution.BID_ASK
     return Distribution.SPOT
 
-def analyze(candles,pool,fee_apr=0,horizon_bars=24,mc_paths=2000,distribution=None):
+def analyze(candles,pool,fee_apr=0,horizon_bars=24,mc_paths=2000,distribution=None,bar_minutes=15):
     _,_,_,closes,_=extract(candles); m=math_engine(candles); regime=classify_regime(m)
     r=range_engine(m,regime,closes); b=bin_engine(r,pool); dist=distribution or choose_distribution(m,regime)
     liq=liquidity_distribution(b,m,dist); mc=bootstrap_monte_carlo(closes,r.lower_price,r.upper_price,horizon_bars,mc_paths)
-    risk=risk_engine(m,r,mc,fee_apr,horizon_bars); rb=rebalance_engine(m,r,mc,regime)
+    # horizon_bars adalah bar (default 15 menit), sedangkan risk_engine butuh hari.
+    horizon_days=max(1,horizon_bars)*max(1,bar_minutes)/1440.0
+    risk=risk_engine(m,r,mc,fee_apr,horizon_days); rb=rebalance_engine(m,r,mc,regime)
     return DLMMPosition(m,regime,r,b,dist,liq,mc,risk,rb)
 
 def format_report(p,top_bins=9):
@@ -227,4 +247,4 @@ def format_report(p,top_bins=9):
            "",f"REBALANCE    : {'YES' if rb.rebalance else 'NO'} ({rb.urgency})",f"REASONS      : {', '.join(rb.reasons) if rb.reasons else 'range masih sehat'}","",
            "TOP LIQUIDITY BINS:"]
     lines += [f"  {x.bin_id:>8} price={x.price:.10g} weight={x.weight*100:6.2f}%" for x in ranked]
-    return "\\n".join(lines)
+    return "\n".join(lines)
