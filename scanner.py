@@ -949,9 +949,8 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 def scan():
     """Tool-Trade radar -> Pool formula pipeline.
 
-    This layer only discovers and applies Tool-Trade's server-side eligibility
-    filters. It does not calculate Pool intelligence, Monte Carlo, range, IL,
-    fees, or final decisions. Those remain in Review.
+    Tool-Trade supplies discovery and pair selection. Pool Review supplies
+    the actual intelligence, Monte Carlo, range and LP analysis.
     """
     discovered, discovery_diag = fetch_dexscreener_pairs()
 
@@ -968,9 +967,24 @@ def scan():
         "discovery": discovery_diag,
     }
 
-    by_token = {}
-
+    # Match Tool-Trade: group by chain + base token, then keep the pair with
+    # the highest liquidity before applying eligibility filters.
+    grouped = {}
     for p in discovered:
+        if not isinstance(p, dict):
+            continue
+        chain = str(p.get("chainId") or "").strip().lower()
+        token = str((p.get("baseToken") or {}).get("address") or "").strip()
+        if not chain or not token:
+            continue
+        key = f"{chain}:{token.lower()}"
+        liq = float((p.get("liquidity") or {}).get("usd") or 0)
+        old = grouped.get(key)
+        old_liq = float((old.get("liquidity") or {}).get("usd") or 0) if old else -1
+        if old is None or liq > old_liq:
+            grouped[key] = p
+
+    for p in grouped.values():
         try:
             chain = str(p.get("chainId") or "").strip().lower()
             base = p.get("baseToken") or {}
@@ -984,6 +998,7 @@ def scan():
             funnel["chains"] += 1
             funnel["token_data"] += 1
 
+            # Exact Tool-Trade server-side eligibility gates.
             liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
             if liquidity < 10_000:
                 continue
@@ -1006,12 +1021,11 @@ def scan():
             buys_24h = int(t24.get("buys") or 0)
             sells_24h = int(t24.get("sells") or 0)
 
+            if buys_1h < 1:
+                continue
             if v1 <= 0:
                 continue
             funnel["volume"] += 1
-
-            if buys_1h < 1:
-                continue
             funnel["activity"] += 1
 
             created = p.get("pairCreatedAt")
@@ -1025,7 +1039,7 @@ def scan():
             total_24h = buys_24h + sells_24h
             buy_ratio = safe_div(buys_1h, total_1h, 0.5)
 
-            row = {
+            rows = {
                 "token": token,
                 "chain": chain,
                 "base": symbol,
@@ -1065,26 +1079,21 @@ def scan():
                 "gmgn_url": gmgn_url(token),
             }
 
-            key = f"{chain}:{token.lower()}"
-            old = by_token.get(key)
-            new_key = (total_1h, v1, liquidity, total_6h, v6)
-            old_key = (
-                old["transactions_1h"],
-                old["volume_1h"],
-                old["liquidity"],
-                old["transactions_6h"],
-                old["volume_6h"],
-            ) if old else None
-            if old is None or new_key > old_key:
-                by_token[key] = row
+            yield_row = rows
+            # Preserve the selected pair itself for Review, without running
+            # any Pool formula during scanning.
+            if yield_row:
+                if "_rows" not in funnel:
+                    funnel["_rows"] = []
+                funnel["_rows"].append(yield_row)
 
         except Exception as exc:
             funnel["row_errors"] += 1
             if len(funnel["row_error_samples"]) < 8:
                 funnel["row_error_samples"].append(str(exc)[:180])
 
-    rows = sorted(
-        by_token.values(),
+    rows = funnel.pop("_rows", [])
+    rows.sort(
         key=lambda x: (
             x["transactions_1h"],
             x["volume_1h"],
@@ -1094,7 +1103,6 @@ def scan():
         ),
         reverse=True,
     )
-
     funnel["final"] = len(rows)
 
     return {
