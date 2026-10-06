@@ -241,13 +241,13 @@ function renderReview(d,name){
  '<div class="sub" style="margin-top:8px">Engine '+esc(d.formula_engine||a.formula_engine||'POOL-INTEL')+' · '+esc(a.mode||'LIVE_SNAPSHOT')+'<br>'+esc(a.prediction_note||'Live formulas use current market state.')+'</div></div>'+
  '</div><div class="review-col">'+mcCard+params+
  '<div class="card"><div class="section-title">RISK ENGINE · RANGE SURVIVAL</div><div class="value '+riskCls+'">'+risk.toFixed(1)+'</div>'+
- '<div class="sub">P(out-of-range) <b>'+pct(ri.out_of_range||0)+'</b> · source <b>'+esc(ri.out_of_range_source||'LIVE')+'</b><br>IL proxy '+(ri.il_proxy==null?'N/A':pct(ri.il_proxy))+' · Fee yield '+(ri.fee_yield==null?'N/A':pct(ri.fee_yield))+'</div>'+
+ '<div class="sub">P(ever out-of-range) <b>'+pct(ri.out_of_range||0)+'</b> · source <b>'+esc(ri.out_of_range_source||'LIVE')+'</b><br>IL proxy '+(ri.il_proxy==null?'N/A':pct(ri.il_proxy))+' · Fee yield '+(ri.fee_yield==null?'N/A':pct(ri.fee_yield))+'</div>'+
  '<hr style="border-color:#1b303b;border-width:1px 0 0;margin:10px 0"><div class="small">'+(ri.notes||[]).map(esc).join(' · ')+'</div></div>'+
  '<div class="card"><div class="section-title">LP DECISION</div><div class="value '+riskCls+'">'+(rb.rebalance?'REBALANCE':'RANGE HEALTHY')+'</div>'+
  '<div class="sub" style="margin-top:7px">Confidence: <b>'+esc(d.confidence||'LIVE')+'</b><br>Data source: <b>'+esc(d.data_source||'DexScreener')+'</b><br>Model status: <b>'+esc(d.model_status||'LIVE_ONLY')+'</b></div>'+
  '<div style="margin-top:14px"><div class="section-title">QUICK READ</div><div class="reason"><span class="dotmini"></span>Regime <b>'+esc(d.regime||'—')+'</b></div>'+
  '<div class="reason"><span class="dotmini"></span>1h move <b>'+num(lm.h1,1)+'%</b></div><div class="reason"><span class="dotmini"></span>Buy ratio <b>'+pct(lm.buy_ratio||0)+'</b></div>'+
- '<div class="reason"><span class="dotmini"></span>Range width <b>'+pct(r.width_pct||0)+'</b></div><div class="reason"><span class="dotmini"></span>MC out-of-range <b>'+(mcOut==null?'—':pct(mcOut))+'</b></div></div></div>'+
+ '<div class="reason"><span class="dotmini"></span>Range width <b>'+pct(r.width_pct||0)+'</b></div><div class="reason"><span class="dotmini"></span>MC ever out-of-range <b>'+(mcOut==null?'—':pct(mcOut))+'</b></div></div></div>'+
  '<div class="card"><div class="section-title">MODEL HONESTY</div><div class="sub">Merton simulation uses the standard diffusion + Poisson jump + lognormal jump-size structure. Parameter calibration is Pool-specific and snapshot-based because no real OHLCV history is available. This is a <b>LOW-confidence scenario probability</b>, not a guaranteed forecast.</div></div>'+
  '</div></div>';
 }
