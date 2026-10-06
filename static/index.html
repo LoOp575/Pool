@@ -62,6 +62,11 @@ hr{border-color:var(--line)!important}
  <div class="card"><div class="label">Meteora</div><div class="value purple" id="kMet">—</div><div class="sub">eligible pools</div></div>
 </div>
 
+<div class="card" style="margin-top:8px">
+ <div class="section-title">SCANNER FUNNEL <span class="muted">· token flow</span></div>
+ <div id="funnel" class="pulse-row" style="gap:14px;flex-wrap:wrap"></div>
+</div>
+
 <div class="grid main" style="margin-top:10px">
  <div class="card">
   <div class="section-title">MARKET PULSE</div>
@@ -126,13 +131,21 @@ async function load(){
 }
 function render(d){
  const rows=d.rows||[];
- $('kPools').textContent=d.count;
+ $('kPools').textContent=d.funnel?.discovered ?? d.count;
  $('kOpp').textContent=rows.filter(x=>x.lp_score>=70).length;
  $('kRisk').textContent=rows.filter(x=>(x.lp_components?.directional_safety||100)<45).length;
  $('kScore').textContent=rows.length?(rows.reduce((a,x)=>a+x.lp_score,0)/rows.length).toFixed(1):'—';
  $('kVL').textContent=rows.length?(rows.reduce((a,x)=>a+x.vol_liq,0)/rows.length).toFixed(1)+'x':'—';
  $('kMet').textContent=rows.filter(x=>x.meteora).length;
 
+ const f=d.funnel||{};
+ const funnelItems=[
+  ['FOUND',f.discovered],['MEME',f.meme_score],['1–7D',f.age_1_7d],
+  ['VOL',f.active_volume],['HISTORY',f.history_available],['PUMP ≥30%',f.pump_30pct],
+  ['VOL LIFE',f.volume_persistence],['NOT FADE',f.not_faded],['FINAL',f.final]
+ ];
+ $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('');
+ 
  const avg=k=>rows.length?rows.reduce((a,x)=>a+(x.lp_components?.[k]||0),0)/rows.length:0;
  $('pFee').textContent=avg('fee_potential').toFixed(0);
  $('pLiq').textContent=avg('liquidity_quality').toFixed(0);
