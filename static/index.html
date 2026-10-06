@@ -122,55 +122,17 @@ async function load(){
  }catch(e){$('status').textContent='error: '+e.message}
 }
 function render(d){
- const rows=d.rows||[];
- $('kPools').textContent=d.funnel?.discovered ?? d.count;
+ const rows=d.rows||[], f=d.funnel||{}, dd=f.discovery||{};
  $('kOpp').textContent=rows.length;
- $('kRisk').textContent=rows.filter(x=>(x.buy_ratio_1h||0)<0.4).length;
  $('kScore').textContent=rows.length?money(rows.reduce((a,x)=>a+(x.volume_1h||0),0)/rows.length):'—';
- $('kVL').textContent=rows.length?(rows.reduce((a,x)=>a+(x.volume_1h||0),0)/rows.length>0?'LIVE':'—'):'—';
- $('kMet').textContent=rows.filter(x=>x.meteora).length;
-
- const f=d.funnel||{}, dd=f.discovery||{};
- const funnelItems=[
-  ['FOUND',f.discovered],['SOLANA',f.chains],['TOKEN DATA',f.token_data],['AGE',f.age],
-  ['VOLUME',f.volume],['BUY/SELL',f.activity],['FINAL',f.final]
- ];
- const discoveryLine='SEARCH '+Number(dd.pairs||0)+' · SOLANA '+Number(dd.pairs||0);
- const discoveryErrors=(dd.errors||[]).length;
- $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('')
-   +'<span style="flex-basis:100%;border-top:1px solid var(--line);padding-top:6px"><b>DISCOVERY</b> <span class="muted">'+discoveryLine+(discoveryErrors?' · ERR '+discoveryErrors:'')+'</span></span>';
- if(!rows.length){
-   $('status').textContent=d.discovery_status==='NO_PAIRS'
-     ? 'DexScreener tidak mengembalikan pair. Cek discovery.'
-     : 'Pair ditemukan, tetapi tidak lolos filter.';
- }
-
- $('pFee').textContent=rows.length?'LIVE':'—';
- $('pLiq').textContent=rows.length?money(rows.reduce((a,x)=>a+(x.liquidity||0),0)/rows.length):'—';
- $('pAct').textContent=rows.length?Math.round(rows.reduce((a,x)=>a+(x.transactions_1h||0),0)/rows.length):'—';
- $('pSafe').textContent=rows.length?Math.round(rows.reduce((a,x)=>a+(x.buy_ratio_1h||0),0)/rows.length*100)+'%':'—';
- const pulse=rows.length?Math.min(100,rows.reduce((a,x)=>a+(x.volume_1h||0),0)/Math.max(1,rows.reduce((a,x)=>a+(x.liquidity||0),0))*100):0;
- $('pulseBar').style.width=clamp(pulse,0,100)+'%';
- $('pulseText').textContent=rows.length?'Scanner membaca volume dan flow live.':'Belum ada data scanner.';
-
- $('rows').innerHTML=rows.map((x,i)=>{
-   const [st,sc]=statusOf(x);
-   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+' · '+(x.age_days||0).toFixed(1)+'d</div></td><td><b class="'+sc+'">'+(x.age_days||0).toFixed(1)+'d</b></td><td>'+money(x.volume_24h||0)+'</td><td>'+Number(x.buys_1h||0)+'</td><td>'+Number(x.sells_1h||0)+'</td><td><span class="pill '+sc+'">'+st+'</span></td></tr>'
- }).join('')||'<tr><td colspan="6" class="empty">Tidak ada kandidat.</td></tr>';
-
- $('heat').innerHTML='<div>TOKEN</div><div>VOL 1H</div><div>BUY</div><div>SELL</div>'+rows.slice(0,8).map(x=>{
-   return '<div><b>'+esc(x.base||'?')+'</b></div><div>'+money(x.volume_1h||0)+'</div><div class="green">'+Number(x.buys_1h||0)+'</div><div class="red">'+Number(x.sells_1h||0)+'</div>'
- }).join('');
-
- $('radar').querySelectorAll('.dot').forEach(e=>e.remove());
- rows.slice(0,15).forEach((x,i)=>{
-   const flow=Math.min(1,Math.max(0,x.buy_ratio_1h||0));
-   const dot=document.createElement('div'); dot.className='dot '+(flow<.4?'risk':flow<.5?'warn':''); dot.title=(x.base||'?')+' BUY '+Number(flow*100).toFixed(0)+'%';
-   dot.style.left=(8+flow*84)+'%'; dot.style.top=(88-Math.min(80,(x.volume_1h||0)/Math.max(1,x.liquidity||1)*80))+'%'; dot.onclick=()=>selectPool(i); $('radar').appendChild(dot);
- });
- if(rows.length)selectPool(0);
-}
-function selectPool(i){
+ $('kPools').textContent=Object.keys(dd.chains||{}).length||0;
+ const errors=(dd.errors||[]).length;
+ const chains=Object.entries(dd.chains||{}).map(([k,v])=>k.toUpperCase()+': '+v).join(' · ');
+ $('funnel').textContent='FOUND '+Number(f.discovered||0)+' · PAIRS '+Number(dd.pairs||0)+(chains?' · '+chains:'')+(errors?' · ERR '+errors:'');
+ if(!rows.length) $('status').textContent=d.discovery_status==='NO_PAIRS'?'DexScreener tidak mengembalikan pair.':'Pair ditemukan, tetapi tidak lolos filter.';
+ $('rows').innerHTML=rows.map((x,i)=>'<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div></td><td><b>'+esc((x.chain||x.chainId||'?').toUpperCase())+'</b><div class="sub">'+esc(x.dex||'?')+'</div></td><td>'+Number(x.age_days||0).toFixed(1)+'d</td><td>'+money(x.volume_1h||0)+'</td><td>'+Number(x.buys_1h||0)+'</td><td>'+Number(x.sells_1h||0)+'</td><td>'+money(x.liquidity||0)+'</td></tr>').join('')||'<tr><td colspan="7" class="empty">Tidak ada kandidat.</td></tr>';
+ if(rows.length) selectPool(0);
+}function selectPool(i){
  if(!DATA?.rows?.[i])return; selected=DATA.rows[i];
  const x=selected;
  $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill">'+esc(statusOf(x)[0])+'</span><span class="pill">'+esc(x.age_days.toFixed(1))+'d</span></div><div class="pulse-row"><span>Age</span><b>'+x.age_days.toFixed(2)+'d</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(x.volume_1h)+'</b></div><div class="pulse-row"><span>Volume 6h</span><b>'+money(x.volume_6h)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.volume_24h)+'</b></div><div class="pulse-row"><span>Buy 1h</span><b class="green">'+x.buys_1h+'</b></div><div class="pulse-row"><span>Sell 1h</span><b class="red">'+x.sells_1h+'</b></div><div class="pulse-row"><span>Buy ratio</span><b>'+Number((x.buy_ratio_1h||0)*100).toFixed(0)+'%</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div>';
