@@ -113,10 +113,10 @@ const pct=x=>(Number(x||0)*100).toFixed(1)+'%';
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 function scoreClass(x){return x>=75?'green':x>=55?'yellow':'red'}
 function statusOf(x){
- const risk=100-(x.lp_components?.directional_safety||50);
- if(x.lp_score>=75 && risk<35)return ['ACTIVE','green'];
- if(x.lp_score>=60)return ['WATCH','yellow'];
- return ['RISK','red'];
+ const age=x.age_h||0;
+ if(age<=24)return ['<24H','green'];
+ if(age<=72)return ['1-3D','yellow'];
+ return ['3-7D','yellow'];
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function load(){
@@ -132,62 +132,58 @@ async function load(){
 function render(d){
  const rows=d.rows||[];
  $('kPools').textContent=d.funnel?.discovered ?? d.count;
- $('kOpp').textContent=rows.filter(x=>x.lp_score>=70).length;
- $('kRisk').textContent=rows.filter(x=>(x.lp_components?.directional_safety||100)<45).length;
- $('kScore').textContent=rows.length?(rows.reduce((a,x)=>a+x.lp_score,0)/rows.length).toFixed(1):'—';
- $('kVL').textContent=rows.length?(rows.reduce((a,x)=>a+x.vol_liq,0)/rows.length).toFixed(1)+'x':'—';
+ $('kOpp').textContent=rows.length;
+ $('kRisk').textContent=rows.filter(x=>(x.buy_ratio_1h||0)<0.4).length;
+ $('kScore').textContent=rows.length?(rows.reduce((a,x)=>a+(x.memecoin_score||0),0)/rows.length).toFixed(1):'—';
+ $('kVL').textContent=rows.length?(rows.reduce((a,x)=>a+(x.volume_1h||0),0)/rows.length>0?'LIVE':'—'):'—';
  $('kMet').textContent=rows.filter(x=>x.meteora).length;
 
  const f=d.funnel||{}, dd=f.discovery||{};
  const funnelItems=[
-  ['FOUND',f.discovered],['MEME',f.meme_score],['0.5–7D',f.age_1_7d],
-  ['VOL',f.active_volume],['IGNITION',f.ignition],['FRESH',f.fresh_qualified],
-  ['NOT RUNAWAY',f.not_runaway],['FINAL',f.final]
+  ['FOUND',f.discovered],['MEMECOIN',f.memecoin],['AGE',f.age],
+  ['VOLUME',f.volume],['BUY/SELL',f.activity],['FINAL',f.final]
  ];
  const discoveryLine='SEARCH '+Number(dd.search_pairs_raw||0)+' · SEED '+Number(dd.seed_tokens||0)+' · EXPAND '+Number(dd.pair_expansion_pairs||0)+' · SOLANA '+Number(dd.solana_pairs||0);
  const discoveryErrors=(dd.errors||[]).length;
  $('funnel').innerHTML=funnelItems.map(([k,v])=>'<span><b>'+k+'</b><br><strong>'+Number(v||0)+'</strong></span>').join('')
    +'<span style="flex-basis:100%;border-top:1px solid var(--line);padding-top:6px"><b>DISCOVERY</b> <span class="muted">'+discoveryLine+(discoveryErrors?' · ERR '+discoveryErrors:'')+'</span></span>';
  if(!rows.length){
-   const reason=d.discovery_status==='NO_SOLANA_PAIRS'
-     ? 'DexScreener tidak mengembalikan pair Solana. Cek DISCOVERY di atas, bukan filter meme.'
-     : 'Pair ditemukan, tetapi semuanya gugur di funnel. Gunakan angka tiap tahap untuk menemukan bottleneck.';
-   $('status').textContent=reason;
+   $('status').textContent=d.discovery_status==='NO_SOLANA_PAIRS'
+     ? 'DexScreener tidak mengembalikan pair Solana. Cek DISCOVERY.'
+     : 'Pair ditemukan, tetapi tidak lolos filter memecoin / age / volume / buy-sell.';
  }
- 
- const avg=k=>rows.length?rows.reduce((a,x)=>a+(x.lp_components?.[k]||0),0)/rows.length:0;
- $('pFee').textContent=avg('fee_potential').toFixed(0);
- $('pLiq').textContent=avg('liquidity_quality').toFixed(0);
- $('pAct').textContent=avg('activity').toFixed(0);
- $('pSafe').textContent=avg('directional_safety').toFixed(0);
- const pulse=avg('fee_potential');
+
+ $('pFee').textContent=rows.length?'LIVE':'—';
+ $('pLiq').textContent=rows.length?money(rows.reduce((a,x)=>a+(x.liquidity||0),0)/rows.length):'—';
+ $('pAct').textContent=rows.length?Math.round(rows.reduce((a,x)=>a+(x.transactions_1h||0),0)/rows.length):'—';
+ $('pSafe').textContent=rows.length?Math.round(rows.reduce((a,x)=>a+(x.buy_ratio_1h||0),0)/rows.length*100)+'%':'—';
+ const pulse=rows.length?Math.min(100,rows.reduce((a,x)=>a+(x.volume_1h||0),0)/Math.max(1,rows.reduce((a,x)=>a+(x.liquidity||0),0))*100):0;
  $('pulseBar').style.width=clamp(pulse,0,100)+'%';
- $('pulseText').textContent=pulse>75?'Volume/liq tinggi: fee opportunity sedang panas.':pulse>50?'Aktivitas cukup sehat untuk dipantau.':'Pasar relatif sepi atau liquidity berat.';
+ $('pulseText').textContent=rows.length?'Scanner membaca volume dan flow live.':'Belum ada data scanner.';
 
  $('rows').innerHTML=rows.map((x,i)=>{
    const [st,sc]=statusOf(x);
-   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.dex||'—')+' · '+(x.age_h/24).toFixed(1)+'d</div></td><td><b class="'+scoreClass(x.fresh_score)+'">'+x.fresh_score.toFixed(1)+'</b></td><td class="'+(x.h24>=30?'green':x.h24>=5?'yellow':'red')+'">'+(x.h24>=0?'+':'')+x.h24.toFixed(1)+'%</td><td>'+x.vol_liq.toFixed(1)+'x</td><td>'+Number((x.buy_ratio||0)*100).toFixed(0)+'% buys</td><td><span class="pill '+(x.pump_stage==='POST_PUMP'?'green':x.pump_stage==='FADE'||x.pump_stage==='RUNAWAY'?'yellow':sc)+'">'+esc((x.pump_stage||st).replace('_',' '))+'</span></td></tr>'
+   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+' · '+(x.age_days||0).toFixed(1)+'d</div></td><td><b class="'+sc+'">'+(x.age_days||0).toFixed(1)+'d</b></td><td>'+money(x.volume_24h||0)+'</td><td>'+Number(x.buys_1h||0)+'</td><td>'+Number(x.sells_1h||0)+'</td><td><span class="pill '+sc+'">'+st+'</span></td></tr>'
  }).join('')||'<tr><td colspan="6" class="empty">Tidak ada kandidat.</td></tr>';
 
- $('heat').innerHTML='<div>TOKEN</div><div>FEE</div><div>RANGE</div><div>RISK</div>'+rows.slice(0,8).map(x=>{
-   const fee=x.lp_components?.fee_potential||0, range=x.lp_components?.range_quality_proxy||0, risk=100-(x.lp_components?.directional_safety||0);
-   return '<div><b>'+esc(x.base||'?')+'</b></div><div><div class="barline"><i style="width:'+fee+'%"></i></div><span class="sub">'+fee.toFixed(0)+'</span></div><div><div class="barline"><i style="width:'+range+'%"></i></div><span class="sub">'+range.toFixed(0)+'</span></div><div class="'+(risk>55?'red':risk>30?'yellow':'green')+'">'+risk.toFixed(0)+'</div>'
+ $('heat').innerHTML='<div>TOKEN</div><div>VOL 1H</div><div>BUY</div><div>SELL</div>'+rows.slice(0,8).map(x=>{
+   return '<div><b>'+esc(x.base||'?')+'</b></div><div>'+money(x.volume_1h||0)+'</div><div class="green">'+Number(x.buys_1h||0)+'</div><div class="red">'+Number(x.sells_1h||0)+'</div>'
  }).join('');
 
  $('radar').querySelectorAll('.dot').forEach(e=>e.remove());
  rows.slice(0,15).forEach((x,i)=>{
-   const risk=100-(x.lp_components?.directional_safety||50), fee=x.lp_components?.fee_potential||50;
-   const dot=document.createElement('div'); dot.className='dot '+(risk>55?'risk':risk>30?'warn':''); dot.title=(x.base||'?')+' LP '+x.lp_score.toFixed(1);
-   dot.style.left=(8+clamp((100-risk)*.84,0,84))+'%'; dot.style.top=(88-clamp(fee*.80,0,80))+'%'; dot.onclick=()=>selectPool(i); $('radar').appendChild(dot);
+   const flow=Math.min(1,Math.max(0,x.buy_ratio_1h||0));
+   const dot=document.createElement('div'); dot.className='dot '+(flow<.4?'risk':flow<.5?'warn':''); dot.title=(x.base||'?')+' BUY '+Number(flow*100).toFixed(0)+'%';
+   dot.style.left=(8+flow*84)+'%'; dot.style.top=(88-Math.min(80,(x.volume_1h||0)/Math.max(1,x.liquidity||1)*80))+'%'; dot.onclick=()=>selectPool(i); $('radar').appendChild(dot);
  });
  if(rows.length)selectPool(0);
 }
 function selectPool(i){
  if(!DATA?.rows?.[i])return; selected=DATA.rows[i];
- const x=selected, c=x.lp_components||{}, risk=100-(c.directional_safety||50), [st,sc]=statusOf(x);
- $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill '+sc+'">'+st+'</span><span class="pill">LP '+x.lp_score.toFixed(1)+'</span><span class="pill">'+esc((x.pump_stage||'—').replace('_',' '))+'</span></div><div class="pulse-row"><span>Fresh score</span><b class="'+scoreClass(x.fresh_score)+'">'+Number(x.fresh_score||0).toFixed(1)+'</b></div><div class="pulse-row"><span>Age</span><b>'+(x.age_h/24).toFixed(1)+'d</b></div><div class="pulse-row"><span>24H change</span><b class="green">'+(x.h24>=0?'+':'')+Number(x.h24||0).toFixed(1)+'%</b></div><div class="pulse-row"><span>Buy ratio</span><b>'+Number((x.buy_ratio||0)*100).toFixed(0)+'%</b></div><div class="pulse-row"><span>Volume persistence</span><b>'+((x.volume_persistence||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Recent volume accel.</span><b>'+((x.volume_acceleration||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.v24)+'</b></div>';
- $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Fee potential <b>'+Number(c.fee_potential||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Range quality <b>'+Number(c.range_quality_proxy||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Liquidity quality <b>'+Number(c.liquidity_quality||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Activity <b>'+Number(c.activity||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Directional safety <b>'+Number(c.directional_safety||0).toFixed(0)+'</b></div>';
- $('riskSnap').innerHTML='<b class="'+(risk>55?'red':risk>30?'yellow':'green')+'">Directional risk '+risk.toFixed(0)+'/100</b><br>Stage <b>'+esc(x.pump_stage||'—')+'</b> · 24H '+(x.h24>=0?'+':'')+Number(x.h24||0).toFixed(1)+'% · Volume persistence <b>'+((x.volume_persistence||0).toFixed(2))+'x</b> · accel <b>'+((x.volume_acceleration||0).toFixed(2))+'x</b><br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
+ const x=selected;
+ $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill">'+esc(statusOf(x)[0])+'</span><span class="pill">'+esc(x.age_days.toFixed(1))+'d</span></div><div class="pulse-row"><span>Age</span><b>'+x.age_days.toFixed(2)+'d</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(x.volume_1h)+'</b></div><div class="pulse-row"><span>Volume 6h</span><b>'+money(x.volume_6h)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.volume_24h)+'</b></div><div class="pulse-row"><span>Buy 1h</span><b class="green">'+x.buys_1h+'</b></div><div class="pulse-row"><span>Sell 1h</span><b class="red">'+x.sells_1h+'</b></div><div class="pulse-row"><span>Buy ratio</span><b>'+Number((x.buy_ratio_1h||0)*100).toFixed(0)+'%</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div>';
+ $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Memecoin <b>'+Number(x.memecoin_score||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Volume 1h <b>'+money(x.volume_1h)+'</b></div><div class="reason"><span class="dotmini"></span>Buy / Sell <b>'+x.buys_1h+' / '+x.sells_1h+'</b></div><div class="reason"><span class="dotmini"></span>Age <b>'+x.age_days.toFixed(2)+'d</b></div>';
+ $('riskSnap').innerHTML='<b>FLOW</b> · BUY '+x.buys_1h+' · SELL '+x.sells_1h+' · 24H VOL '+money(x.volume_24h)+'<br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
  $('selected').onclick=()=>review(x.pair,(x.base||'?')+' / '+(x.quote||'?'));
 }
 async function review(pair,name){
