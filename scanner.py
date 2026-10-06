@@ -334,10 +334,12 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """Bounded Solana discovery for the scanner.
+    """Fast DexScreener discovery for a serverless scanner.
 
-    This is discovery only. Keep the request budget small and parallel so a
-    serverless request reaches scan() before its execution window expires.
+    Keep discovery intentionally small: scan must finish inside a Vercel
+    function window. Search results already contain the live pair metrics
+    needed by the filter, so expensive token-by-token pair expansion is not
+    required for the radar.
     """
     pairs = {}
     diag = {
@@ -358,9 +360,9 @@ def fetch_search_pairs():
         if address:
             pairs[address] = p
 
-    # Search requests are parallel, not sequential. These queries are only
-    # broad entry points; scan() performs the actual memecoin/age/volume flow.
-    queries = ["meme", "pump", "pepe", "dog", "cat", "bonk"]
+    # Three broad searches give the radar a wide Solana net while keeping
+    # request count predictable. The actual filters decide what is relevant.
+    queries = ["USDC", "SOL", "pump"]
     diag["search_queries_total"] = len(queries)
 
     def search(q):
@@ -372,7 +374,7 @@ def fetch_search_pairs():
         except Exception as exc:
             return q, exc
 
-    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         for q, data in pool.map(search, queries):
             if isinstance(data, Exception):
                 record_error("search:"+q, data)
@@ -381,56 +383,6 @@ def fetch_search_pairs():
             raw = data.get("pairs") or [] if isinstance(data, dict) else []
             diag["search_pairs_raw"] += len(raw)
             for p in raw:
-                add_pair(p)
-
-    # Latest profiles/boosts catch fresh launches that don't contain a useful
-    # search keyword. Only a bounded seed set is expanded.
-    seed_paths = [
-        "/token-profiles/latest/v1",
-        "/token-boosts/latest/v1",
-        "/token-boosts/top/v1",
-    ]
-    seed_tokens = []
-
-    def seed(path):
-        try:
-            return path, get_json(DEX_URL + path)
-        except Exception as exc:
-            return path, exc
-
-    diag["seed_feeds_total"] = len(seed_paths)
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        for path, data in pool.map(seed, seed_paths):
-            if isinstance(data, Exception):
-                record_error("seed:"+path, data)
-                continue
-            diag["seed_feeds_ok"] += 1
-            for x in data if isinstance(data, list) else []:
-                if x.get("chainId") == "solana" and x.get("tokenAddress"):
-                    seed_tokens.append(x["tokenAddress"])
-
-    unique_seeds = list(dict.fromkeys(seed_tokens))[:24]
-    diag["seed_tokens"] = len(unique_seeds)
-    diag["pair_expansion_total"] = len(unique_seeds)
-
-    def expand(token):
-        try:
-            data = get_json(
-                DEX_URL + "/token-pairs/v1/solana/" +
-                urllib.parse.quote(token, safe="")
-            )
-            return token, data if isinstance(data, list) else []
-        except Exception as exc:
-            return token, exc
-
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        for token, data in pool.map(expand, unique_seeds):
-            if isinstance(data, Exception):
-                record_error("pair:"+token, data)
-                continue
-            diag["pair_expansion_ok"] += 1
-            diag["pair_expansion_pairs"] += len(data)
-            for p in data:
                 add_pair(p)
 
     diag["solana_pairs"] = len(pairs)
