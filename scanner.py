@@ -958,10 +958,10 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             if not token or not symbol:
                 continue
 
-            # Meme identity is the only semantic filter in the scanner.
-            # This is discovery, not an LP/intelligence score.
-            if not is_memecoin_pair(p):
-                continue
+            # The search query is the meme discovery mechanism.
+            # Do not apply a second heuristic meme-score gate here.
+            # DexScreener supplies the candidate; scanner only checks
+            # the basic live fields needed by the target radar.
             funnel["meme"] += 1
 
             # Discovery filter only: recent Solana pairs.
@@ -1109,7 +1109,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             "discovery_source": "DexScreener API",
             "age_hours_min": 0.25,
             "age_hours_max": 168,
-            "meme_identity_required": True,
+            "meme_identity_required": "DexScreener search discovery",
             "requires_live_volume": True,
             "requires_live_activity": True,
             "scanner_role": "FILTER_ONLY",
