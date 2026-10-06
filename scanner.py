@@ -967,39 +967,31 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 
 
 def scan(limit=40, only_meteora=False, strategy="balanced"):
-    """Simple memecoin scanner.
+    """DexScreener target scanner.
 
-    Scanner responsibility is intentionally limited to discovery/filtering:
-    - Solana pair
-    - meme-like token
-    - age
-    - volume
-    - buy/sell activity
-
-    LP scoring, range analysis and Monte Carlo belong to Review.
+    Scanner only finds busy, already-moving Solana tokens. It deliberately
+    does not decide whether an LP position is good; Review owns the formulas.
     """
     limit = min(max(int(limit), 1), 100)
     discovered, discovery_diag = fetch_search_pairs()
 
-    rows = []
     funnel = {
         "discovered": len(discovered),
-        "memecoin": 0,
+        "solana": 0,
         "age": 0,
         "volume": 0,
         "activity": 0,
+        "pump": 0,
         "final": 0,
         "discovery": discovery_diag,
     }
-
     by_token = {}
 
     for p in discovered:
         try:
-            meme_score, meme_reasons = memecoin_score(p)
-            if meme_score < 5:
+            if p.get("chainId") != "solana":
                 continue
-            funnel["memecoin"] += 1
+            funnel["solana"] += 1
 
             base = p.get("baseToken") or {}
             token = base.get("address")
@@ -1014,13 +1006,16 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 (time.time() * 1000 - float(created)) / 3600000
             ) if created else 9999.0
 
-            # Target window: fresh launches up to 7 days.
+            # Keep the radar focused on recent tokens, but do not reject them
+            # because their ticker/name does not look like a meme.
             if not 0.25 <= age_h <= 168:
                 continue
             funnel["age"] += 1
 
             volume = p.get("volume") or {}
             txns = p.get("txns") or {}
+            changes = p.get("priceChange") or {}
+
             v1 = float(volume.get("h1") or 0)
             v6 = float(volume.get("h6") or 0)
             v24 = float(volume.get("h24") or 0)
@@ -1040,10 +1035,18 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             total_6h = buys_6h + sells_6h
             total_24h = buys_24h + sells_24h
 
-            # Activity filter is deliberately light. A token can be fresh
-            # and still have little 1h flow, so 24h activity is accepted too.
-            has_volume = v1 > 0 or v6 > 0 or v24 > 0
-            has_activity = total_1h > 0 or total_6h > 0 or total_24h > 0
+            # "Rame" is volume OR transaction activity. We use multiple
+            # windows so a fresh token is not killed by a quiet 1h window.
+            has_volume = (
+                v1 >= 1_000 or
+                v6 >= 5_000 or
+                v24 >= 10_000
+            )
+            has_activity = (
+                total_1h >= 5 or
+                total_6h >= 15 or
+                total_24h >= 30
+            )
             if not has_volume:
                 continue
             funnel["volume"] += 1
@@ -1051,9 +1054,24 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 continue
             funnel["activity"] += 1
 
+            h1 = float(changes.get("h1") or 0)
+            h6 = float(changes.get("h6") or 0)
+            h24 = float(changes.get("h24") or 0)
+
+            # "Sudah pump" means there is measurable positive price expansion
+            # in at least one live DexScreener window. Do not require a meme
+            # keyword because the scanner's job is to find the target first.
+            pump = (
+                h1 >= 5 or
+                h6 >= 10 or
+                h24 >= 20
+            )
+            if not pump:
+                continue
+            funnel["pump"] += 1
+
             liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
             price = float(p.get("priceUsd") or 0)
-            changes = p.get("priceChange") or {}
             buy_ratio_1h = safe_div(buys_1h, total_1h, 0.5)
 
             row = {
@@ -1081,12 +1099,16 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 "transactions_24h": total_24h,
                 "buy_ratio_1h": round(buy_ratio_1h, 4),
                 "liquidity": liquidity,
-                "h1": float(changes.get("h1") or 0),
-                "h6": float(changes.get("h6") or 0),
-                "h24": float(changes.get("h24") or 0),
-                "memecoin_score": round(meme_score, 2),
-                "meme_reasons": meme_reasons,
-                "scan_tier": "MEMECOIN",
+                "h1": h1,
+                "h6": h6,
+                "h24": h24,
+                "pump_signal": True,
+                "pump_window": (
+                    "1H" if h1 >= 5 else
+                    "6H" if h6 >= 10 else
+                    "24H"
+                ),
+                "scan_tier": "HIGH_VOLUME_PUMP",
                 "source": "DexScreener",
                 "history_available": False,
                 "data_confidence": "LIVE",
@@ -1099,28 +1121,34 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             if only_meteora and not row["meteora"]:
                 continue
 
-            # Keep one best pair per token, preferring activity then volume.
+            # One result per token. Prefer the pair with the strongest live
+            # flow, then volume. Review can inspect the selected pair.
             old = by_token.get(token)
-            if old is None or (
-                row["transactions_1h"],
-                row["volume_1h"],
-                row["volume_24h"]
-            ) > (
+            new_key = (
+                max(h1, h6 / 2, h24 / 4),
+                total_1h,
+                v1,
+                v24,
+            )
+            old_key = (
+                max(old["h1"], old["h6"] / 2, old["h24"] / 4),
                 old["transactions_1h"],
                 old["volume_1h"],
-                old["volume_24h"]
-            ):
+                old["volume_24h"],
+            ) if old else None
+            if old is None or new_key > old_key:
                 by_token[token] = row
+
         except Exception:
             continue
 
     rows = sorted(
         by_token.values(),
         key=lambda x: (
+            max(x["h1"], x["h6"] / 2, x["h24"] / 4),
             x["transactions_1h"],
             x["volume_1h"],
             x["volume_24h"],
-            -x["age_h"],
         ),
         reverse=True,
     )[:limit]
@@ -1133,11 +1161,20 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
         "rows": rows,
         "source": "DexScreener" if rows else "none",
         "filters": {
-            "memecoin_score_min": 5,
             "age_hours_min": 0.25,
             "age_hours_max": 168,
+            "volume_1h_min": 1000,
+            "volume_6h_min": 5000,
+            "volume_24h_min": 10000,
+            "activity_1h_min": 5,
+            "activity_6h_min": 15,
+            "activity_24h_min": 30,
+            "pump_h1_min": 5,
+            "pump_h6_min": 10,
+            "pump_h24_min": 20,
             "requires_volume": True,
-            "requires_buy_or_sell_activity": True,
+            "requires_activity": True,
+            "requires_positive_pump": True,
             "unique_tokens": True,
             "only_meteora": only_meteora,
             "scanner_role": "FILTER_ONLY",
