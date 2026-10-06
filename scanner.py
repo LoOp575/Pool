@@ -956,236 +956,186 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 
 
 def scan(limit=40, only_meteora=False, strategy="balanced"):
-    """DexScreener discovery scanner: broad candidate radar, LP scoring happens in Review."""
-    candidates=[]
-    funnel={"discovered":0,"meme_score":0,"liquidity":0,"age_1_7d":0,"fallback_mode":False,
-            "active_volume":0,"history_checked":0,"history_available":0,
-            "pump_30pct":0,"volume_persistence":0,"not_faded":0,
-            "fallback_24h":0,"final_before_dedupe":0,"final":0,
-            "fresh_qualified":0,"ignition":0,"not_runaway":0,"discovery":{}}
+    """Simple memecoin scanner.
 
-    discovered, discovery_diag=fetch_search_pairs()
-    funnel["discovered"]=len(discovered)
-    funnel["discovery"]=discovery_diag
+    Scanner responsibility is intentionally limited to discovery/filtering:
+    - Solana pair
+    - meme-like token
+    - age
+    - volume
+    - buy/sell activity
 
-    # Stage 1: strict candidates. Keep this useful for ranking, but do not make
-    # it the only source of rows shown to the user.
+    LP scoring, range analysis and Monte Carlo belong to Review.
+    """
+    limit = min(max(int(limit), 1), 100)
+    discovered, discovery_diag = fetch_search_pairs()
+
+    rows = []
+    funnel = {
+        "discovered": len(discovered),
+        "memecoin": 0,
+        "age": 0,
+        "volume": 0,
+        "activity": 0,
+        "final": 0,
+        "discovery": discovery_diag,
+    }
+
+    by_token = {}
+
     for p in discovered:
         try:
-            meme_score,_=memecoin_score(p)
+            meme_score, meme_reasons = memecoin_score(p)
             if meme_score < 20:
                 continue
-            funnel["meme_score"] += 1
+            funnel["memecoin"] += 1
 
-            _,row=rank_pair(p,strategy)
-            if row["liquidity"] < 1000:
-                continue
-            funnel["liquidity"] += 1
-
-            age_h=row["age_h"]
-            h1=row["h1"]
-            h6=row["h6"]
-            h24=row["h24"]
-            v1=row["v1"]
-            v24=row["v24"]
-            liq=row["liquidity"]
-
-            if not 0.5 <= age_h <= 168:
-                continue
-            funnel["age_1_7d"] += 1
-
-            active=(v1 >= max(750,liq*0.015) or
-                    v24 >= max(5000,liq*0.08))
-            if not active:
-                continue
-            funnel["active_volume"] += 1
-
-            if h24 >= 30:
-                funnel["pump_30pct"] += 1
-
-            volume_accel=safe_div(v1,max(v24/24,1),0)
-            row["volume_acceleration"]=round(volume_accel,3)
-
-            ignition=(
-                (h1 >= 2 and v1 >= max(1000,liq*0.02)) or
-                (h6 >= 8 and h24 >= 15 and v1 >= max(500,liq*0.01)) or
-                (h24 >= 30 and v1 >= max(1500,liq*0.03))
-            )
-            if ignition:
-                funnel["ignition"] += 1
-
-            not_runaway=not (h1 >= 70 and h24 >= 250)
-            if not_runaway:
-                funnel["not_runaway"] += 1
-            if not not_runaway:
+            base = p.get("baseToken") or {}
+            token = base.get("address")
+            symbol = str(base.get("symbol") or "").strip()
+            name = str(base.get("name") or "").strip()
+            if not token or not symbol:
                 continue
 
-            persistence=clamp(
-                0.55*score01(v24/max(liq*0.15,1))+
-                0.45*score01(v1/max(liq*0.03,1)),0,1)
-            row["volume_persistence"]=round(persistence,3)
-            if persistence >= 0.45:
-                funnel["volume_persistence"] += 1
-                funnel["not_faded"] += 1
+            created = p.get("pairCreatedAt") or 0
+            age_h = max(
+                0.0,
+                (time.time() * 1000 - float(created)) / 3600000
+            ) if created else 9999.0
 
-            if row["fresh_score"] < 32:
+            # Target window: fresh launches up to 7 days.
+            if not 0.25 <= age_h <= 168:
                 continue
-            funnel["fresh_qualified"] += 1
+            funnel["age"] += 1
+
+            volume = p.get("volume") or {}
+            txns = p.get("txns") or {}
+            v1 = float(volume.get("h1") or 0)
+            v6 = float(volume.get("h6") or 0)
+            v24 = float(volume.get("h24") or 0)
+
+            h1tx = txns.get("h1") or {}
+            h6tx = txns.get("h6") or {}
+            h24tx = txns.get("h24") or {}
+
+            buys_1h = int(h1tx.get("buys") or 0)
+            sells_1h = int(h1tx.get("sells") or 0)
+            buys_6h = int(h6tx.get("buys") or 0)
+            sells_6h = int(h6tx.get("sells") or 0)
+            buys_24h = int(h24tx.get("buys") or 0)
+            sells_24h = int(h24tx.get("sells") or 0)
+
+            total_1h = buys_1h + sells_1h
+            total_6h = buys_6h + sells_6h
+            total_24h = buys_24h + sells_24h
+
+            # Activity filter is deliberately light. A token can be fresh
+            # and still have little 1h flow, so 24h activity is accepted too.
+            has_volume = v1 > 0 or v6 > 0 or v24 > 0
+            has_activity = total_1h > 0 or total_6h > 0 or total_24h > 0
+            if not has_volume:
+                continue
+            funnel["volume"] += 1
+            if not has_activity:
+                continue
+            funnel["activity"] += 1
+
+            liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
+            price = float(p.get("priceUsd") or 0)
+            changes = p.get("priceChange") or {}
+            buy_ratio_1h = safe_div(buys_1h, total_1h, 0.5)
+
+            row = {
+                "token": token,
+                "base": symbol,
+                "name": name,
+                "quote": (p.get("quoteToken") or {}).get("symbol"),
+                "pair": p.get("pairAddress"),
+                "dex": p.get("dexId"),
+                "url": p.get("url"),
+                "price": price,
+                "age_h": round(age_h, 2),
+                "age_days": round(age_h / 24, 2),
+                "volume_1h": v1,
+                "volume_6h": v6,
+                "volume_24h": v24,
+                "buys_1h": buys_1h,
+                "sells_1h": sells_1h,
+                "buys_6h": buys_6h,
+                "sells_6h": sells_6h,
+                "buys_24h": buys_24h,
+                "sells_24h": sells_24h,
+                "transactions_1h": total_1h,
+                "transactions_6h": total_6h,
+                "transactions_24h": total_24h,
+                "buy_ratio_1h": round(buy_ratio_1h, 4),
+                "liquidity": liquidity,
+                "h1": float(changes.get("h1") or 0),
+                "h6": float(changes.get("h6") or 0),
+                "h24": float(changes.get("h24") or 0),
+                "memecoin_score": round(meme_score, 2),
+                "meme_reasons": meme_reasons,
+                "scan_tier": "MEMECOIN",
+                "source": "DexScreener",
+                "history_available": False,
+                "data_confidence": "LIVE",
+                "meteora": str(p.get("dexId") or "").lower() in {
+                    "meteora", "meteora-dlmm", "meteora-dlmm2"
+                },
+                "gmgn_url": gmgn_url(token),
+            }
 
             if only_meteora and not row["meteora"]:
                 continue
 
-            row["scan_tier"]="STRICT"
-            row["source"]="DexScreener"
-            row["history_available"]=False
-            row["data_confidence"]="LIVE"
-            row["pump_pct"]=max(0,h24/100)
-            row["pump_measurement"]="24H_CHANGE_PROXY"
-            row["drawdown_from_peak"]=None
-            row["pump_age_h"]=None
-            row["pump_stage"]="IGNITION" if ignition and h24 < 30 else "EARLY_PUMP" if h24 < 100 else "PUMPED_24H"
-            row["post_pump_score"]=row["fresh_score"]
-            row["post_pump_edge"]=round(row["fresh_score"],2)
-            row["score"]=clamp(
-                0.78*row["fresh_score"]+0.14*row["lp_score"]+0.08*meme_score,
-                0,100)
-            candidates.append(row)
+            # Keep one best pair per token, preferring activity then volume.
+            old = by_token.get(token)
+            if old is None or (
+                row["transactions_1h"],
+                row["volume_1h"],
+                row["volume_24h"]
+            ) > (
+                old["transactions_1h"],
+                old["volume_1h"],
+                old["volume_24h"]
+            ):
+                by_token[token] = row
         except Exception:
             continue
 
-    # Stage 2: discovery fallback. The radar should still show viable young
-    # meme candidates when the strict LP funnel is sparse. These rows are NOT
-    # automatically "good LPs"; Review/Pool Lab decides that.
-    fallback_target=max(8,min(int(limit),20))
-    if len(candidates) < fallback_target and discovered:
-        funnel["fallback_mode"]=True
-        existing={x.get("token") for x in candidates if x.get("token")}
-
-        for p in discovered:
-            if len(candidates) >= int(limit):
-                break
-            try:
-                meme_score,_=memecoin_score(p)
-                if meme_score < 5:
-                    continue
-
-                _,row=rank_pair(p,strategy)
-                token=row.get("token")
-                if token in existing:
-                    continue
-
-                if row["liquidity"] < 250:
-                    continue
-
-                age_h=row["age_h"]
-                h1=row["h1"]
-                h6=row["h6"]
-                h24=row["h24"]
-                v1=row["v1"]
-                v24=row["v24"]
-                liq=row["liquidity"]
-
-                if not 0.25 <= age_h <= 168:
-                    continue
-
-                t1=p.get("txns") or {}
-                h1tx=t1.get("h1") or {}
-                txns=int(h1tx.get("buys") or 0)+int(h1tx.get("sells") or 0)
-
-                active=(
-                    v1 >= max(100,liq*0.002) or
-                    v24 >= max(750,liq*0.0125) or
-                    txns >= 15
-                )
-                if not active:
-                    continue
-
-                # Keep obvious vertical pumps out of the radar, but don't
-                # discard normal momentum because the LP engine will judge it.
-                if h1 >= 120 and h24 >= 600:
-                    continue
-
-                if row["fresh_score"] < 10:
-                    continue
-
-                if only_meteora and not row["meteora"]:
-                    continue
-
-                row["scan_tier"]="DISCOVERY"
-                row["source"]="DexScreener"
-                row["history_available"]=False
-                row["data_confidence"]="LIVE"
-                row["volume_acceleration"]=round(
-                    safe_div(v1,max(v24/24,1),0),3)
-                row["volume_persistence"]=round(clamp(
-                    0.55*score01(v24/max(liq*0.15,1))+
-                    0.45*score01(v1/max(liq*0.03,1)),0,1),3)
-                row["pump_pct"]=max(0,h24/100)
-                row["pump_measurement"]="24H_CHANGE_PROXY"
-                row["drawdown_from_peak"]=None
-                row["pump_age_h"]=None
-                row["pump_stage"]="DISCOVERY"
-                row["post_pump_score"]=row["fresh_score"]
-                row["post_pump_edge"]=round(row["fresh_score"],2)
-                row["score"]=clamp(
-                    0.64*row["fresh_score"]+
-                    0.24*row["lp_score"]+
-                    0.12*meme_score,0,100)
-                candidates.append(row)
-                existing.add(token)
-            except Exception:
-                continue
-    else:
-        funnel["fallback_mode"]=False
-
-    funnel["fallback_24h"]=len(candidates)
-    funnel["final_before_dedupe"]=len(candidates)
-
-    by_token={}
-    for x in candidates:
-        key=x.get("token") or ("pair:"+str(x.get("pair") or ""))
-        old=by_token.get(key)
-        if old is None or (
-            x["score"],x["fresh_score"],x["v1"]
-        ) > (
-            old["score"],old["fresh_score"],old["v1"]
-        ):
-            by_token[key]=x
-
-    funnel["final"]=len(by_token)
-    rows=sorted(
+    rows = sorted(
         by_token.values(),
-        key=lambda x:(
-            x["score"],x["fresh_score"],x["lp_score"],
-            x["v1"],x["liquidity"]
+        key=lambda x: (
+            x["transactions_1h"],
+            x["volume_1h"],
+            x["volume_24h"],
+            -x["age_h"],
         ),
-        reverse=True
+        reverse=True,
     )[:limit]
 
+    funnel["final"] = len(rows)
+
     return {
-        "generated_at":int(time.time()),
-        "count":len(rows),
-        "rows":rows,
-        "source":"DexScreener" if rows else "none",
-        "filters":{
-            "min_liquidity_usd_dex":300,
-            "memecoin_score_min":5,
-            "unique_tokens":True,
-            "memecoin_only":True,
-            "age_hours_min":0.25,
-            "age_hours_max":168,
-            "fresh_score_min":10,
-            "ignition_preferred":False,
-            "runaway_excluded":True,
-            "historical_provider":False,
-            "gmgn_enabled":False,
-            "gmgn_mode":"web-reference-only",
-            "only_meteora":only_meteora,
-            "strategy":strategy,
-            "scanner_role":"DISCOVERY_ONLY"
+        "generated_at": int(time.time()),
+        "count": len(rows),
+        "rows": rows,
+        "source": "DexScreener" if rows else "none",
+        "filters": {
+            "memecoin_score_min": 20,
+            "age_hours_min": 0.25,
+            "age_hours_max": 168,
+            "requires_volume": True,
+            "requires_buy_or_sell_activity": True,
+            "unique_tokens": True,
+            "only_meteora": only_meteora,
+            "scanner_role": "FILTER_ONLY",
         },
-        "funnel":funnel,
-        "discovery_status": "OK" if discovery_diag.get("solana_pairs", 0) else "NO_SOLANA_PAIRS",
+        "funnel": funnel,
+        "discovery_status": (
+            "OK" if discovery_diag.get("solana_pairs", 0)
+            else "NO_SOLANA_PAIRS"
+        ),
     }
 
 def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
