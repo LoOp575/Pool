@@ -334,18 +334,22 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """Fast, observable Solana discovery radar.
+    """Bounded Solana discovery for the scanner.
 
-    Keep the request budget small enough for Vercel/serverless execution.
-    Discovery is intentionally broad; scoring/filtering happens in scan().
+    This is discovery only. Keep the request budget small and parallel so a
+    serverless request reaches scan() before its execution window expires.
     """
     pairs = {}
     diag = {
         "search_queries_total": 0, "search_queries_ok": 0, "search_pairs_raw": 0,
         "seed_feeds_total": 0, "seed_feeds_ok": 0, "seed_tokens": 0,
-        "pair_expansion_total": 0, "pair_expansion_ok": 0,
-        "pair_expansion_pairs": 0, "solana_pairs": 0, "errors": []
+        "pair_expansion_total": 0, "pair_expansion_ok": 0, "pair_expansion_pairs": 0,
+        "solana_pairs": 0, "errors": []
     }
+
+    def record_error(stage, detail):
+        if len(diag["errors"]) < 12:
+            diag["errors"].append({"stage": stage, "error": str(detail)[:180]})
 
     def add_pair(p):
         if not isinstance(p, dict) or p.get("chainId") != "solana":
@@ -354,76 +358,83 @@ def fetch_search_pairs():
         if address:
             pairs[address] = p
 
-    def record_error(stage, detail):
-        if len(diag["errors"]) < 12:
-            diag["errors"].append({"stage": stage, "error": str(detail)[:180]})
-
-    # Search a small, diverse set. Avoid duplicate search work from
-    # fetch_seed_tokens(), which previously multiplied the request count.
-    queries = ["meme", "pump", "pepe", "dog", "cat", "bonk", "wif", "solana"]
+    # Search requests are parallel, not sequential. These queries are only
+    # broad entry points; scan() performs the actual memecoin/age/volume flow.
+    queries = ["meme", "pump", "pepe", "dog", "cat", "bonk"]
     diag["search_queries_total"] = len(queries)
 
-    for q in queries:
+    def search(q):
         try:
-            data = get_json(
+            return q, get_json(
                 DEX_URL + "/latest/dex/search?" +
                 urllib.parse.urlencode({"q": q})
             )
+        except Exception as exc:
+            return q, exc
+
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+        for q, data in pool.map(search, queries):
+            if isinstance(data, Exception):
+                record_error("search:"+q, data)
+                continue
             diag["search_queries_ok"] += 1
             raw = data.get("pairs") or [] if isinstance(data, dict) else []
             diag["search_pairs_raw"] += len(raw)
             for p in raw:
                 add_pair(p)
-        except Exception as exc:
-            record_error("search:"+q, exc)
 
-    # Fresh platform feeds are useful for launches that don't match search text.
+    # Latest profiles/boosts catch fresh launches that don't contain a useful
+    # search keyword. Only a bounded seed set is expanded.
     seed_paths = [
         "/token-profiles/latest/v1",
         "/token-boosts/latest/v1",
         "/token-boosts/top/v1",
     ]
     seed_tokens = []
-    for path in seed_paths:
-        diag["seed_feeds_total"] += 1
+
+    def seed(path):
         try:
-            data = get_json(DEX_URL + path)
+            return path, get_json(DEX_URL + path)
+        except Exception as exc:
+            return path, exc
+
+    diag["seed_feeds_total"] = len(seed_paths)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for path, data in pool.map(seed, seed_paths):
+            if isinstance(data, Exception):
+                record_error("seed:"+path, data)
+                continue
             diag["seed_feeds_ok"] += 1
             for x in data if isinstance(data, list) else []:
                 if x.get("chainId") == "solana" and x.get("tokenAddress"):
                     seed_tokens.append(x["tokenAddress"])
-        except Exception as exc:
-            record_error("seed:"+path, exc)
 
-    # Expand only a bounded number of unique seeds. The old 180-token fan-out
-    # could exhaust serverless time/rate limits before scan() even started.
-    unique_seeds = list(dict.fromkeys(seed_tokens))[:48]
+    unique_seeds = list(dict.fromkeys(seed_tokens))[:24]
     diag["seed_tokens"] = len(unique_seeds)
+    diag["pair_expansion_total"] = len(unique_seeds)
 
-    def pools(token):
+    def expand(token):
         try:
-            return get_json(
+            data = get_json(
                 DEX_URL + "/token-pairs/v1/solana/" +
                 urllib.parse.quote(token, safe="")
-            ) or []
+            )
+            return token, data if isinstance(data, list) else []
         except Exception as exc:
-            record_error("pair:"+token, exc)
-            return []
+            return token, exc
 
-    diag["pair_expansion_total"] = len(unique_seeds)
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(pools, token) for token in unique_seeds]
-        for f in as_completed(futures):
-            result = f.result()
-            if result is not None:
-                diag["pair_expansion_ok"] += 1
-                diag["pair_expansion_pairs"] += len(result)
-                for p in result:
-                    add_pair(p)
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        for token, data in pool.map(expand, unique_seeds):
+            if isinstance(data, Exception):
+                record_error("pair:"+token, data)
+                continue
+            diag["pair_expansion_ok"] += 1
+            diag["pair_expansion_pairs"] += len(data)
+            for p in data:
+                add_pair(p)
 
     diag["solana_pairs"] = len(pairs)
     return list(pairs.values()), diag
-
 
 def _poisson_sample(rng, lam):
     """Exact Poisson sampler for the Merton jump-count process."""
@@ -986,7 +997,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
     for p in discovered:
         try:
             meme_score, meme_reasons = memecoin_score(p)
-            if meme_score < 20:
+            if meme_score < 5:
                 continue
             funnel["memecoin"] += 1
 
@@ -1122,7 +1133,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
         "rows": rows,
         "source": "DexScreener" if rows else "none",
         "filters": {
-            "memecoin_score_min": 20,
+            "memecoin_score_min": 5,
             "age_hours_min": 0.25,
             "age_hours_max": 168,
             "requires_volume": True,
