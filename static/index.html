@@ -194,99 +194,87 @@ async function review(pair,name){
 }
 function renderReview(d,name){
  const r=d.range||{},ri=d.risk||{},rb=d.rebalance||{},a=d.analysis||{},lm=d.live_metrics||{},mc=d.monte_carlo||null;
- const risk=Number(ri.score||0);
- const riskCls=risk>70?'red':risk>45?'yellow':'green';
+ const risk=Number(ri.score||0), lp=Number(a.lp_score||0);
  const num=(v,digits=2)=>Number.isFinite(Number(v))?Number(v).toFixed(digits):'—';
- const moneyPx=v=>{
-   const n=Number(v||0);
-   if(!Number.isFinite(n)||n<=0)return '—';
-   return n<0.001?n.toPrecision(6):n.toFixed(6);
- };
- const rangeLower=Number(r.lower||0),rangeUpper=Number(r.upper||0),price=Number(d.price||0);
- const pBelow=Number(mc?.p_below||0),pInside=Number(mc?.p_inside||0),pAbove=Number(mc?.p_above||0);
- const pEscape=Number(mc?.p_ever_out_of_range ?? ri.out_of_range ?? 0);
- const direction=pAbove-pBelow;
- const directionText=direction>0.12?'Cenderung naik':direction<-0.12?'Cenderung turun':'Dua arah / berimbang';
- const directionCls=direction>0.12?'green':direction<-0.12?'red':'yellow';
- const safetyText=pEscape<0.20?'RANGE KUAT':pEscape<0.35?'PERLU PANTAU':'RANGE MUDAH JEBOL';
- const safetyCls=pEscape<0.20?'green':pEscape<0.35?'yellow':'red';
- const escapeMin=mc?.mean_first_escape_bars==null?null:Number(mc.mean_first_escape_bars)*15;
- const rangeWidthPct=Number(r.width_pct||0);
- const position=rangeUpper>rangeLower?Math.max(0,Math.min(100,(price-rangeLower)/(rangeUpper-rangeLower)*100)):50;
- const insideWidth=Math.max(8,Math.min(84,pInside*84));
- const belowWidth=Math.max(0,pBelow*84);
- const aboveWidth=Math.max(0,pAbove*84);
- const outcomeBar='<div style="display:flex;height:28px;border-radius:7px;overflow:hidden;background:#151f27;margin-top:10px">'+
-   '<div style="width:'+belowWidth+'%;background:#f06f7e55;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800">TURUN '+pct(pBelow)+'</div>'+
-   '<div style="width:'+insideWidth+'%;background:#46d89a44;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800">TETAP DI RANGE '+pct(pInside)+'</div>'+
-   '<div style="width:'+aboveWidth+'%;background:#65b9ff55;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800">NAIK '+pct(pAbove)+'</div></div>';
- const humanDecision=rb.rebalance?'RANGE PERLU DISESUAIKAN':'RANGE MASIH SEHAT';
- const decisionCls=rb.rebalance?'yellow':'green';
- const moveLabel=directionText==='Cenderung naik'?'Tekanan naik lebih dominan':directionText==='Cenderung turun'?'Tekanan turun lebih dominan':'Tekanan beli dan jual relatif berimbang';
- const escapeLabel=escapeMin==null?'Belum terdeteksi':escapeMin<60?'Cepat, kurang dari 1 jam':escapeMin<240?'Dalam beberapa jam':'Cenderung lebih lambat';
- const mcCard=mc
-  ? '<div class="card"><div class="section-title">SIMULASI PERGERAKAN · 24 JAM</div>'+
-    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px">'+
-      '<div style="background:#0f171e;border:1px solid #18242d;padding:9px;border-radius:6px"><div class="label">PELUANG TURUN</div><div class="value red">'+pct(pBelow)+'</div></div>'+
-      '<div style="background:#0f171e;border:1px solid #18242d;padding:9px;border-radius:6px"><div class="label">PELUANG TETAP DI RANGE</div><div class="value green">'+pct(pInside)+'</div></div>'+
-      '<div style="background:#0f171e;border:1px solid #18242d;padding:9px;border-radius:6px"><div class="label">PELUANG NAIK</div><div class="value blue">'+pct(pAbove)+'</div></div>'+
-    '</div>'+outcomeBar+
-    '<div class="pulse-row" style="margin-top:10px"><span>Harga tengah yang paling sering muncul</span><b>'+moneyPx(mc.p50)+'</b></div>'+
-    '<div class="pulse-row"><span>Rentang kemungkinan</span><b>'+moneyPx(mc.p05)+' → '+moneyPx(mc.p95)+'</b></div>'+
-    '<div class="pulse-row"><span>Rata-rata harga akhir</span><b>'+moneyPx(mc.expected_terminal_price)+'</b></div>'+
-    '<div class="pulse-row"><span>Jika range jebol, biasanya</span><b>'+escapeLabel+'</b></div>'+
-    '</div>'
-  : '<div class="card"><div class="section-title">SIMULASI PERGERAKAN</div><div class="value yellow">BELUM TERSEDIA</div><div class="sub" style="margin-top:7px">'+esc(d.monte_carlo_error||'Data simulasi belum tersedia.')+'</div></div>';
-
- const marketBehavior='<div class="card"><div class="section-title">APA YANG TERLIHAT DI PASAR?</div>'+
-   '<div class="pulse-row"><span>Gerakan harga</span><b class="'+directionCls+'">'+directionText+'</b></div>'+
-   '<div class="pulse-row"><span>Aktivitas pasar</span><b>'+((Number(lm.v1||0)>0&&Number(lm.liquidity||0)>0)?num(Number(lm.vol_liq||0),1)+'x volume / liquidity':'—')+'</b></div>'+
-   '<div class="pulse-row"><span>Tekanan beli</span><b>'+pct(lm.buy_ratio||0)+'</b></div>'+
-   '<div class="pulse-row"><span>Perubahan 1 jam</span><b class="'+(Number(lm.h1||0)>=0?'green':'red')+'">'+(Number(lm.h1||0)>=0?'+':'')+num(lm.h1,1)+'%</b></div>'+
-   '<div class="pulse-row"><span>Perubahan 24 jam</span><b class="'+(Number(lm.h24||0)>=0?'green':'red')+'">'+(Number(lm.h24||0)>=0?'+':'')+num(lm.h24,1)+'%</b></div>'+
-   '<div class="sub" style="margin-top:8px">'+moveLabel+'. Angka di atas adalah hasil pembacaan kondisi pasar saat ini.</div></div>';
-
- const rangeCard='<div class="card"><div class="section-title">RANGE LP</div>'+
-   '<div class="value">'+moneyPx(rangeLower)+' → '+moneyPx(rangeUpper)+'</div>'+
-   '<div class="sub">Lebar range '+num(rangeWidthPct,1)+'% · posisi harga sekarang '+num(position,0)+'%</div>'+
-   '<div class="rangebox" style="margin-top:12px"><div class="rangebar" style="margin-bottom:34px"><div style="position:absolute;left:0;right:0;top:4px;height:18px;border:1px solid #46d89a66;background:#46d89a12;border-radius:3px"></div><div class="marker" style="left:'+position+'%"><span>HARGA SEKARANG</span></div></div></div>'+
-   '<div class="pulse-row"><span>Kesimpulan range</span><b class="'+safetyCls+'">'+safetyText+'</b></div>'+
-   '<div class="sub">'+(pEscape<0.20?'Sebagian besar simulasi tetap berada di area yang menghasilkan fee.':pEscape<0.35?'Masih layak dipantau, tetapi ada peluang range cepat ditembus.':'Range terlalu mudah ditembus untuk kondisi saat ini.')+'</div></div>';
-
- const scoreCard='<div class="card"><div class="section-title">SKOR KEPUTUSAN</div>'+
-   '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">'+
-     '<div style="background:#0f171e;padding:10px;border-radius:6px"><div class="label">PELUANG LP</div><div class="value '+(Number(a.lp_score||0)>=70?'green':Number(a.lp_score||0)>=55?'yellow':'red')+'">'+num(a.lp_score,0)+'/100</div></div>'+
-     '<div style="background:#0f171e;padding:10px;border-radius:6px"><div class="label">RISIKO</div><div class="value '+riskCls+'">'+num(risk,0)+'/100</div></div>'+
-   '</div>'+
-   '<div class="pulse-row" style="margin-top:8px"><span>Keputusan sekarang</span><b class="'+decisionCls+'">'+humanDecision+'</b></div>'+
-   '<div class="pulse-row"><span>Potensi fee</span><b>'+num(a.lp_components?.fee_potential,0)+'/100</b></div>'+
-   '<div class="pulse-row"><span>Kualitas range</span><b>'+num(a.lp_components?.range_quality_proxy,0)+'/100</b></div>'+
-   '<div class="pulse-row"><span>Keamanan arah harga</span><b>'+num(a.lp_components?.directional_safety,0)+'/100</b></div>'+
-   '</div>';
+ const px=v=>{const n=Number(v||0);return Number.isFinite(n)&&n>0?(n<0.001?n.toPrecision(6):n.toFixed(6)):'—'};
+ const pct01=v=>pct(Number(v||0));
+ const price=Number(d.price||0), lo=Number(r.lower||0), hi=Number(r.upper||0);
+ const below=Number(mc?.p_below||0), inside=Number(mc?.p_inside||0), above=Number(mc?.p_above||0);
+ const escape=Number(mc?.p_ever_out_of_range ?? ri.out_of_range ?? 0);
+ const balance=above-below;
+ const direction=balance>0.12?'NAIK':balance<-0.12?'TURUN':'SEIMBANG';
+ const dirCls=direction==='NAIK'?'green':direction==='TURUN'?'red':'yellow';
+ const rangeState=escape<0.20?'RANGE KUAT':escape<0.35?'PERLU PANTAU':'RANGE MUDAH JEBOL';
+ const rangeCls=escape<0.20?'green':escape<0.35?'yellow':'red';
+ const decision=rb.rebalance||escape>=0.35||lp<50?'TUNGGU / REBALANCE':lp>=70&&escape<0.25&&inside>=0.55?'MASUK':'TUNGGU';
+ const decisionCls=decision==='MASUK'?'green':decision.startsWith('TUNGGU')?'yellow':'yellow';
+ const decisionIcon=decision==='MASUK'?'✓':decision==='TUNGGU'?'⏳':'↻';
+ const decisionText=decision==='MASUK'?'Kondisi saat ini cukup mendukung posisi LP.':decision==='TUNGGU / REBALANCE'?'Range terlalu mudah bergeser atau risiko terlalu tinggi untuk masuk sekarang.':'Tunggu kondisi lebih stabil sebelum membuka posisi.';
+ const escapeBars=mc?.mean_first_escape_bars==null?null:Number(mc.mean_first_escape_bars);
+ const escapeText=escapeBars==null?'Belum terdeteksi':escapeBars<4?'< 1 jam':escapeBars<16?'1–4 jam':escapeBars<48?'4–12 jam':'> 12 jam';
+ const position=hi>lo?Math.max(0,Math.min(100,(price-lo)/(hi-lo)*100)):50;
+ const fee=Number(a.lp_components?.fee_potential||0), rq=Number(a.lp_components?.range_quality_proxy||0), ds=Number(a.lp_components?.directional_safety||0);
+ const volumeRatio=Number(lm.vol_liq||0);
+ const outcome='<div style="display:flex;height:32px;border-radius:8px;overflow:hidden;background:#111a21;margin-top:10px">'+
+   '<div style="width:'+Math.max(2,below*100)+'%;background:#f06f7e55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">TURUN '+pct01(below)+'</div>'+
+   '<div style="width:'+Math.max(2,inside*100)+'%;background:#46d89a44;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">RANGE '+pct01(inside)+'</div>'+
+   '<div style="width:'+Math.max(2,above*100)+'%;background:#65b9ff55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">NAIK '+pct01(above)+'</div></div>';
+ const metric=(label,value,cls='')=>'<div style="background:#0f171e;border:1px solid #18242d;border-radius:8px;padding:10px"><div class="label">'+label+'</div><div class="value '+cls+'" style="font-size:18px">'+value+'</div></div>';
+ const reason=(ok,title,body)=>'<div class="reason"><span class="dotmini '+(ok?'green':'red')+'"></span><b>'+title+'</b><br><span class="sub">'+body+'</span></div>';
 
  $('review').innerHTML='<div class="review-shell">'+
- '<div class="review-col"><div><button onclick="back()">← Back to Radar</button></div>'+
- '<div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+moneyPx(price)+'</div>'+
- '<span class="pill '+decisionCls+'">'+humanDecision+'</span><span class="pill blue">'+esc(d.data_source||'DexScreener')+'</span>'+
- '<span class="pill '+safetyCls+'">'+safetyText+'</span><span class="pill '+directionCls+'">'+directionText+'</span></div>'+
- rangeCard+marketBehavior+scoreCard+
- '</div><div class="review-col">'+
- '<div class="card"><div class="section-title">KESIMPULAN CEPAT</div>'+
- '<div class="value '+safetyCls+'">'+safetyText+'</div>'+
- '<div class="sub" style="margin-top:7px">Peluang harga tetap di dalam range <b>'+pct(pInside)+'</b>. Peluang range pernah ditembus <b>'+pct(pEscape)+'</b>.</div>'+
- '<div style="margin-top:10px">'+outcomeBar+'</div>'+
- '<div class="pulse-row" style="margin-top:10px"><span>Arah dominan</span><b class="'+directionCls+'">'+directionText+'</b></div>'+
- '<div class="pulse-row"><span>Kecepatan potensi jebol</span><b>'+escapeLabel+'</b></div>'+
- '</div>'+mcCard+
- '<div class="card"><div class="section-title">APA ARTINYA UNTUK LP?</div>'+
- '<div class="reason"><span class="dotmini"></span><b>'+ (pInside>=0.65?'Bagus untuk fee':'Belum ideal untuk fee') +'</b><br><span class="sub">'+(pInside>=0.65?'Mayoritas simulasi tetap berputar di dalam range.':'Terlalu banyak simulasi keluar range, sehingga posisi perlu lebih sering disesuaikan.')+'</span></div>'+
- '<div class="reason"><span class="dotmini"></span><b>'+ (pEscape<0.25?'Range relatif tahan':'Range cukup mudah ditembus') +'</b><br><span class="sub">'+(pEscape<0.25?'Risiko harga keluar area masih terkendali.':'Pergerakan agresif dapat mengurangi waktu posisi aktif.')+'</span></div>'+
- '<div class="reason"><span class="dotmini"></span><b>'+ (Math.abs(direction)<0.12?'Gerakan dua arah lebih sehat':'Gerakan satu arah perlu diwaspadai') +'</b><br><span class="sub">'+(Math.abs(direction)<0.12?'Beli dan jual relatif seimbang untuk strategi fee.':'Pergerakan satu arah meningkatkan risiko range cepat tertinggal.')+'</span></div>'+
+ '<div class="review-col">'+
+ '<div><button onclick="back()">← Back to Radar</button></div>'+
+ '<div class="card" style="padding:18px">'+
+   '<div class="label">KEPUTUSAN POOL · '+esc(name)+'</div>'+
+   '<div style="display:flex;align-items:center;gap:12px;margin-top:6px;flex-wrap:wrap">'+
+     '<div class="value '+decisionCls+'" style="font-size:34px;line-height:1">'+decisionIcon+' '+decision+'</div>'+
+     '<span class="pill '+rangeCls+'">'+rangeState+'</span><span class="pill '+dirCls+'">ARAH '+direction+'</span>'+
+   '</div>'+
+   '<div class="sub" style="margin-top:9px;font-size:13px">'+decisionText+'</div>'+
  '</div>'+
- '<div class="card"><div class="section-title">REKOMENDASI</div><div class="value '+decisionCls+'">'+humanDecision+'</div><div class="sub" style="margin-top:7px">'+
- (rb.rebalance?'Jangan terlalu percaya range saat ini. Pantau pergeseran harga dan siapkan rebalance.':'Range saat ini masih masuk akal. Fokus utama adalah menjaga posisi tetap berada di area fee.')+
- '</div></div>'+
- '<div class="card"><div class="section-title">CATATAN</div><div class="sub">Ini adalah simulasi probabilitas dari kondisi pasar saat ini, bukan janji harga. Semakin cepat kondisi pasar berubah, semakin cepat hasil simulasi perlu dihitung ulang.</div></div>'+
+ '<div class="card"><div class="section-title">KENAPA?</div>'+
+   reason(inside>=0.55,'Peluang tetap di range '+pct01(inside),inside>=0.55?'Mayoritas simulasi masih berada di area yang menghasilkan fee.':'Terlalu banyak simulasi keluar dari range.')+
+   reason(escape<0.25,'Range '+(escape<0.25?'cukup tahan':'mudah ditembus'),escape<0.25?'Peluang range pernah ditembus masih terkendali.':'Harga berpotensi cepat meninggalkan area LP.')+
+   reason(Math.abs(balance)<0.12,'Gerakan '+(Math.abs(balance)<0.12?'dua arah':'satu arah'),Math.abs(balance)<0.12?'Tekanan naik dan turun relatif seimbang.':'Gerakan satu arah membuat range lebih cepat tertinggal.')+
+ '</div>'+
+ '<div class="card"><div class="section-title">RANGE LP · AREA FEE</div>'+
+   '<div class="value">'+px(lo)+' → '+px(hi)+'</div>'+
+   '<div class="sub">Lebar '+num(r.width_pct,1)+'% · harga sekarang berada di '+num(position,0)+'% area range</div>'+
+   '<div class="rangebox" style="margin-top:12px"><div class="rangebar" style="margin-bottom:34px"><div style="position:absolute;left:0;right:0;top:4px;height:18px;border:1px solid #46d89a66;background:#46d89a12;border-radius:3px"></div><div class="marker" style="left:'+position+'%"><span>SEKARANG</span></div></div></div>'+
+   '<div class="pulse-row"><span>Potensi range jebol</span><b class="'+rangeCls+'">'+pct01(escape)+'</b></div>'+
+   '<div class="pulse-row"><span>Perkiraan waktu jebol</span><b>'+escapeText+'</b></div>'+
+ '</div>'+
+ '</div>'+
+ '<div class="review-col">'+
+ '<div class="card"><div class="section-title">DALAM 24 JAM, KEMUNGKINANNYA</div>'+
+   '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px">'+
+     metric('TURUN',pct01(below),'red')+metric('TETAP DI RANGE',pct01(inside),'green')+metric('NAIK',pct01(above),'blue')+
+   '</div>'+outcome+
+   '<div class="pulse-row" style="margin-top:10px"><span>Harga yang paling sering muncul</span><b>'+px(mc?.p50)+'</b></div>'+
+   '<div class="pulse-row"><span>Rentang kemungkinan</span><b>'+px(mc?.p05)+' → '+px(mc?.p95)+'</b></div>'+
+ '</div>'+
+ '<div class="card"><div class="section-title">KONDISI PASAR SEKARANG</div>'+
+   '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:7px">'+
+     metric('AKTIVITAS',volumeRatio>0?num(volumeRatio,1)+'x':'—')+
+     metric('TEKANAN BELI',pct01(lm.buy_ratio||0),(Number(lm.buy_ratio||0)>=0.5?'green':'red'))+
+     metric('PERUBAHAN 1 JAM',(Number(lm.h1||0)>=0?'+':'')+num(lm.h1,1)+'%',Number(lm.h1||0)>=0?'green':'red')+
+     metric('PERUBAHAN 24 JAM',(Number(lm.h24||0)>=0?'+':'')+num(lm.h24,1)+'%',Number(lm.h24||0)>=0?'green':'red')+
+   '</div>'+
+   '<div class="sub" style="margin-top:9px">Pembacaan ini berasal dari data pasar live. Mesin di belakang layar memakai kondisi tersebut untuk menjalankan simulasi.</div>'+
+ '</div>'+
+ '<div class="card"><div class="section-title">NILAI UNTUK LP</div>'+
+   '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px">'+
+     metric('PELUANG FEE',num(fee,0)+'/100',fee>=70?'green':fee>=50?'yellow':'red')+
+     metric('KUALITAS RANGE',num(rq,0)+'/100',rq>=70?'green':rq>=50?'yellow':'red')+
+     metric('KEAMANAN ARAH',num(ds,0)+'/100',ds>=70?'green':ds>=50?'yellow':'red')+
+   '</div>'+
+ '</div>'+
+ '<div class="card"><div class="section-title">REKOMENDASI</div>'+
+   '<div class="value '+decisionCls+'">'+decision+'</div>'+
+   '<div class="sub" style="margin-top:7px">'+(decision==='MASUK'?'Range masih cukup sehat untuk strategi fee. Tetap pantau jika harga bergerak mendekati batas.':decision==='TUNGGU / REBALANCE'?'Jangan kejar posisi. Tunggu range baru atau lakukan rebalance saat kondisi berubah.':'Belum ada keunggulan yang cukup kuat. Biarkan scanner memantau dan hitung ulang.')+'</div>'+
+ '</div>'+
+ '<div class="card"><div class="section-title">CATATAN SINGKAT</div><div class="sub">Hasil ini adalah probabilitas, bukan kepastian harga. Simulasi dihitung ulang dari kondisi pasar terbaru.</div></div>'+
  '</div></div>';
 }
 function back(){$('review').style.display='none';$('dashboard').classList.remove('hidden');}
