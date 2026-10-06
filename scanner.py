@@ -962,10 +962,11 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             "active_volume":0,"history_checked":0,"history_available":0,
             "pump_30pct":0,"volume_persistence":0,"not_faded":0,
             "fallback_24h":0,"final_before_dedupe":0,"final":0,
-            "fresh_qualified":0,"ignition":0,"not_runaway":0}
+            "fresh_qualified":0,"ignition":0,"not_runaway":0,"discovery":{}}
 
-    discovered=fetch_search_pairs()
+    discovered, discovery_diag=fetch_search_pairs()
     funnel["discovered"]=len(discovered)
+    funnel["discovery"]=discovery_diag
 
     # Stage 1: strict candidates. Keep this useful for ranking, but do not make
     # it the only source of rows shown to the user.
@@ -1184,6 +1185,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             "scanner_role":"DISCOVERY_ONLY"
         },
         "funnel":funnel,
+        "discovery_status": "OK" if discovery_diag.get("solana_pairs", 0) else "NO_SOLANA_PAIRS",
     }
 
 def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
