@@ -9,9 +9,9 @@
 <main class="wrap">
 <section id="list">
 <div class="controls"><select id="limit"><option>20</option><option selected>40</option><option>80</option></select><label style="padding:9px"><input id="met" type="checkbox"> Meteora only</label><button onclick="load()">🔎 Scan sekarang</button></div>
-<div class="stat"><div class="card">Candidates<div id="n" class="num">—</div></div><div class="card">Meteora<div id="m" class="num">—</div></div><div class="card">High volume/TVL<div id="v" class="num">—</div></div><div class="card">Avg score<div id="s" class="num">—</div></div></div>
-<div class="card" style="margin-top:10px"><b>⬇️ Pilih satu koin untuk REVIEW</b><div class="muted small" style="margin-top:4px">Review menghitung ATR, volatility, z-score, trend, volume pressure, entropy, mean reversion, Monte Carlo, risk dan prediksi range.</div></div>
-<div style="overflow:auto;margin-top:10px"><table><thead><tr><th>Token</th><th>Score</th><th>1h</th><th>5m</th><th>Vol 1h</th><th>Liquidity</th><th>Buy%</th><th>Vol/TVL</th><th>DEX</th><th>Links</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="stat"><div class="card">Candidates<div id="n" class="num">—</div></div><div class="card">Meteora<div id="m" class="num">—</div></div><div class="card">High volume/TVL<div id="v" class="num">—</div></div><div class="card">Avg LP score<div id="s" class="num">—</div></div></div>
+<div class="card" style="margin-top:10px"><b>⬇️ Pilih satu koin untuk REVIEW</b><div class="muted small" style="margin-top:4px">LP Score = fee potential + range quality + volatility quality + liquidity + activity − directional risk. Review lalu menguji range dengan Monte Carlo.</div></div>
+<div style="overflow:auto;margin-top:10px"><table><thead><tr><th>Token</th><th>LP Score</th><th>Meme</th><th>1h</th><th>Vol 1h</th><th>Liquidity</th><th>Buy%</th><th>Vol/TVL</th><th>DEX</th></tr></thead><tbody id="rows"></tbody></table></div>
 </section>
 <section id="review" class="review hidden"></section>
 </main>
@@ -22,8 +22,8 @@ function cls(x){return x>=75?"good":x>=55?"warn":"bad"}
 function pct(x){return (x*100).toFixed(1)+"%"}
 async function load(){ $("status").textContent="scanning…"; try{
 let u="/api/scan?limit="+$("limit").value+"&meteora="+($("met").checked?1:0);let res=await fetch(u);let raw=await res.text();let d;try{d=JSON.parse(raw)}catch(e){throw Error("Server API gagal ("+res.status+"): "+raw.slice(0,180))}if(!res.ok||d.error)throw Error(d.error||("HTTP "+res.status));
-$("n").textContent=d.count;$("m").textContent=d.rows.filter(x=>x.meteora).length;$("v").textContent=d.rows.filter(x=>x.vol_liq>=3).length;$("s").textContent=d.rows.length?(d.rows.reduce((a,x)=>a+x.score,0)/d.rows.length).toFixed(1):"—";
-$("rows").innerHTML=d.rows.map(x=>'<tr class="pick" onclick="review(\''+x.pair+'\',\''+(x.base||"?")+' / '+(x.quote||"?")+'\')"><td><div class="token">'+(x.base||"?")+' / '+(x.quote||"?")+'</div><div class="muted small">'+x.age_h.toFixed(1)+'h · klik REVIEW</div></td><td><span class="'+cls(x.score)+'">'+x.score.toFixed(1)+'</span><div class="meter"><i style="width:'+x.score+'%"></i></div></td><td>'+x.h1.toFixed(1)+'%</td><td>'+x.m5.toFixed(1)+'%</td><td>'+money(x.v1)+'</td><td>'+money(x.liquidity)+'</td><td>'+pct(x.buy_ratio)+'</td><td>'+x.vol_liq.toFixed(1)+'x</td><td>'+ (x.dex||"—")+'</td></tr>').join("")||'<tr><td colspan="9" class="center">Tidak ada kandidat.</td></tr>';
+$("n").textContent=d.count;$("m").textContent=d.rows.filter(x=>x.meteora).length;$("v").textContent=d.rows.filter(x=>x.vol_liq>=3).length;$("s").textContent=d.rows.length?(d.rows.reduce((a,x)=>a+x.lp_score,0)/d.rows.length).toFixed(1):"—";
+$("rows").innerHTML=d.rows.map(x=>'<tr class="pick" onclick="review(\''+x.pair+'\',\''+(x.base||"?")+' / '+(x.quote||"?")+'\')"><td><div class="token">'+(x.base||"?")+' / '+(x.quote||"?")+'</div><div class="muted small">'+x.age_h.toFixed(1)+'h · klik REVIEW</div></td><td><span class="'+cls(x.lp_score)+'">'+x.lp_score.toFixed(1)+'</span><div class="meter"><i style="width:'+x.lp_score+'%"></i></div></td><td>'+x.memecoin_score.toFixed(0)+'</td><td>'+x.h1.toFixed(1)+'%</td><td>'+money(x.v1)+'</td><td>'+money(x.liquidity)+'</td><td>'+pct(x.buy_ratio)+'</td><td>'+x.vol_liq.toFixed(1)+'x</td><td>'+ (x.dex||"—")+'</td></tr>').join("")||'<tr><td colspan="9" class="center">Tidak ada kandidat.</td></tr>';
 $("status").textContent="updated "+new Date().toLocaleTimeString()
 }catch(e){$("status").textContent="error: "+e.message}}
 async function review(pair,name){$("list").classList.add("hidden");$("review").classList.remove("hidden");$("review").innerHTML='<button class="back" onclick="back()">← Kembali ke hasil filter</button><div class="card">Memproses data + rumus untuk <b>'+name+'</b>…</div>';
