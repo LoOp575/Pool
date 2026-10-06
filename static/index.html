@@ -54,10 +54,10 @@ hr{border-color:var(--line)!important}
 </div>
 
 <div class="grid kpis">
- <div class="card"><div class="label">Meme pools</div><div class="value" id="kPools">—</div><div class="sub">discovered now</div></div>
- <div class="card"><div class="label">LP opportunities</div><div class="value green" id="kOpp">—</div><div class="sub">LP score ≥ 70</div></div>
+ <div class="card"><div class="label">Targets</div><div class="value" id="kPools">—</div><div class="sub">DexScreener now</div></div>
+ <div class="card"><div class="label">Pump targets</div><div class="value green" id="kOpp">—</div><div class="sub">passed scanner</div></div>
  <div class="card"><div class="label">High risk</div><div class="value red" id="kRisk">—</div><div class="sub">directional pressure</div></div>
- <div class="card"><div class="label">Avg LP score</div><div class="value" id="kScore">—</div><div class="sub" id="scoreMode">balanced engine</div></div>
+ <div class="card"><div class="label">Avg volume</div><div class="value" id="kScore">—</div><div class="sub" id="scoreMode">DexScreener 1H</div></div>
  <div class="card"><div class="label">Avg Vol/Liq</div><div class="value cyan" id="kVL">—</div><div class="sub">fee intensity proxy</div></div>
  <div class="card"><div class="label">Meteora</div><div class="value purple" id="kMet">—</div><div class="sub">eligible pools</div></div>
 </div>
@@ -80,7 +80,7 @@ hr{border-color:var(--line)!important}
  </div>
 
  <div class="card">
-  <div class="section-title">MEMECOIN SCANNER <span class="muted">· click row</span></div>
+  <div class="section-title">TARGET SCANNER <span class="muted">· volume + pump · click row</span></div>
   <div style="overflow:auto;max-height:285px">
   <table><thead><tr><th>TOKEN</th><th>AGE</th><th>VOL 24H</th><th>BUY 1H</th><th>SELL 1H</th><th>AGE BAND</th></tr></thead>
   <tbody id="rows"></tbody></table></div>
@@ -99,7 +99,7 @@ hr{border-color:var(--line)!important}
   <div class="radar" id="radar"><div class="axisx"></div><div class="axisy"></div><span class="axislabel toplab">HIGH FEE</span><span class="axislabel botlab">LOW FEE</span><span class="axislabel leftlab">HIGH RISK</span><span class="axislabel rightlab">LOW RISK</span></div>
  </div>
  <div class="card"><div class="section-title">FLOW HEATMAP</div><div class="heat" id="heat"><div>TOKEN</div><div>FEE</div><div>RANGE</div><div>RISK</div></div></div>
- <div class="card panel-scroll"><div class="section-title">SELECTED MEMECOIN</div><div id="selected"><div class="empty">Belum ada pool dipilih.</div></div></div>
+ <div class="card panel-scroll"><div class="section-title">SELECTED TARGET</div><div id="selected"><div class="empty">Belum ada pool dipilih.</div></div></div>
 </div>
 </section>
 
@@ -125,7 +125,7 @@ async function load(){
   const u='/api/scan?limit='+$('limit').value+'&strategy='+encodeURIComponent($('mode').value)+'&meteora='+($('met').checked?1:0);
   const res=await fetch(u); const d=await res.json(); if(!res.ok||d.error)throw Error(d.error||'scan gagal');
   DATA=d; render(d);
-  $('scoreMode').textContent=($('mode').value||'balanced')+' engine';
+  $('scoreMode').textContent='DexScreener 1H';
   $('status').textContent=($('mode').value||'balanced').toUpperCase()+' · updated '+new Date().toLocaleTimeString();
  }catch(e){$('status').textContent='error: '+e.message}
 }
@@ -134,7 +134,7 @@ function render(d){
  $('kPools').textContent=d.funnel?.discovered ?? d.count;
  $('kOpp').textContent=rows.length;
  $('kRisk').textContent=rows.filter(x=>(x.buy_ratio_1h||0)<0.4).length;
- $('kScore').textContent=rows.length?(rows.reduce((a,x)=>a+(x.memecoin_score||0),0)/rows.length).toFixed(1):'—';
+ $('kScore').textContent=rows.length?money(rows.reduce((a,x)=>a+(x.volume_1h||0),0)/rows.length):'—';
  $('kVL').textContent=rows.length?(rows.reduce((a,x)=>a+(x.volume_1h||0),0)/rows.length>0?'LIVE':'—'):'—';
  $('kMet').textContent=rows.filter(x=>x.meteora).length;
 
@@ -182,7 +182,7 @@ function selectPool(i){
  if(!DATA?.rows?.[i])return; selected=DATA.rows[i];
  const x=selected;
  $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill">'+esc(statusOf(x)[0])+'</span><span class="pill">'+esc(x.age_days.toFixed(1))+'d</span></div><div class="pulse-row"><span>Age</span><b>'+x.age_days.toFixed(2)+'d</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(x.volume_1h)+'</b></div><div class="pulse-row"><span>Volume 6h</span><b>'+money(x.volume_6h)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.volume_24h)+'</b></div><div class="pulse-row"><span>Buy 1h</span><b class="green">'+x.buys_1h+'</b></div><div class="pulse-row"><span>Sell 1h</span><b class="red">'+x.sells_1h+'</b></div><div class="pulse-row"><span>Buy ratio</span><b>'+Number((x.buy_ratio_1h||0)*100).toFixed(0)+'%</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div>';
- $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Memecoin <b>'+Number(x.memecoin_score||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Volume 1h <b>'+money(x.volume_1h)+'</b></div><div class="reason"><span class="dotmini"></span>Buy / Sell <b>'+x.buys_1h+' / '+x.sells_1h+'</b></div><div class="reason"><span class="dotmini"></span>Age <b>'+x.age_days.toFixed(2)+'d</b></div>';
+ $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Pump <b>'+esc(x.pump_window||'LIVE')+'</b></div><div class="reason"><span class="dotmini"></span>Volume 1h <b>'+money(x.volume_1h)+'</b></div><div class="reason"><span class="dotmini"></span>Buy / Sell <b>'+x.buys_1h+' / '+x.sells_1h+'</b></div><div class="reason"><span class="dotmini"></span>Age <b>'+x.age_days.toFixed(2)+'d</b></div>';
  $('riskSnap').innerHTML='<b>FLOW</b> · BUY '+x.buys_1h+' · SELL '+x.sells_1h+' · 24H VOL '+money(x.volume_24h)+'<br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
  $('selected').onclick=()=>review(x.pair,(x.base||'?')+' / '+(x.quote||'?'));
 }
