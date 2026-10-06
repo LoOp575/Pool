@@ -164,7 +164,7 @@ def is_memecoin_pair(p):
     score,_=memecoin_score(p)
     return score >= 35
 
-def lp_opportunity_score(h1, h24, m5, volume_1h, liquidity, txns, buy_ratio):
+def lp_opportunity_score(h1, h24, m5, volume_1h, liquidity, txns, buy_ratio, strategy="balanced"):
     """
     Balanced LP score 0..100.
 
@@ -189,9 +189,10 @@ def lp_opportunity_score(h1, h24, m5, volume_1h, liquidity, txns, buy_ratio):
     )
     range_quality = clamp(range_quality, 0, 1)
 
-    # Moderate volatility is useful for fees; extreme movement raises escape/IL risk.
+    # Each LP mode has a different volatility sweet spot.
     movement = 0.45 * abs_move + 0.25 * short_move + 0.30 * abs(h24)
-    volatility_quality = clamp(1 - abs(movement - 18) / 45, 0, 1)
+    target_vol = {"conservative": 10, "balanced": 18, "aggressive": 28}.get(strategy, 18)
+    volatility_quality = clamp(1 - abs(movement - target_vol) / 45, 0, 1)
 
     liquidity_quality = score01(math.log1p(max(liquidity, 0)) / math.log1p(2_000_000))
     activity = score01(math.log1p(max(txns, 0)) / math.log1p(10_000))
@@ -211,20 +212,25 @@ def lp_opportunity_score(h1, h24, m5, volume_1h, liquidity, txns, buy_ratio):
         "directional_safety": round(100 * directional_risk, 2),
     }
 
+    weights = {
+        "conservative": (0.18, 0.30, 0.17, 0.20, 0.05, 0.10),
+        "balanced":     (0.25, 0.25, 0.15, 0.15, 0.10, 0.10),
+        "aggressive":   (0.32, 0.18, 0.10, 0.10, 0.15, 0.15),
+    }.get(strategy, (0.25, 0.25, 0.15, 0.15, 0.10, 0.10))
     score = 100 * (
-        0.25 * fee_potential +
-        0.25 * range_quality +
-        0.15 * volatility_quality +
-        0.15 * liquidity_quality +
-        0.10 * activity +
-        0.10 * directional_risk
+        weights[0] * fee_potential +
+        weights[1] * range_quality +
+        weights[2] * volatility_quality +
+        weights[3] * liquidity_quality +
+        weights[4] * activity +
+        weights[5] * directional_risk
     )
     # Balanced LP prefers two-sided flow. Do not destroy the score for momentum.
     score *= 0.92 + 0.08 * balance
     return clamp(score, 0, 100), components
 
 
-def rank_pair(p):
+def rank_pair(p, strategy="balanced"):
     ch=p.get("priceChange") or {}; vol=p.get("volume") or {}; tx=p.get("txns") or {}
     h1=float(ch.get("h1") or 0); m5=float(ch.get("m5") or 0)
     h24=float(ch.get("h24") or 0)
@@ -235,7 +241,7 @@ def rank_pair(p):
     buy_ratio=safe_div(buys,buys+sells,.5); vol_liq=v1/max(liq,1)
 
     lp_score, lp_components = lp_opportunity_score(
-        h1, h24, m5, v1, liq, txns, buy_ratio
+        h1, h24, m5, v1, liq, txns, buy_ratio, strategy=strategy
     )
     meme_score,meme_reasons=memecoin_score(p)
 
@@ -249,7 +255,7 @@ def rank_pair(p):
       "vol_liq":vol_liq,"age_h":age_h,"pair":p.get("pairAddress"),"dex":p.get("dexId"),
       "url":p.get("url"),"base":p.get("baseToken",{}).get("symbol"),
       "name":p.get("baseToken",{}).get("name"),"quote":p.get("quoteToken",{}).get("symbol"),
-      "score":discovery_score,"lp_score":lp_score,"lp_strategy":"BALANCED",
+      "score":discovery_score,"lp_score":lp_score,"lp_strategy":strategy.upper(),
       "lp_components":lp_components,
       "memecoin_score":meme_score,"meme_reasons":meme_reasons,
       "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"},
@@ -306,7 +312,7 @@ def fetch_search_pairs():
     return list(pairs.values())
 
 
-def scan(limit=40,only_meteora=False):
+def scan(limit=40,only_meteora=False,strategy="balanced"):
     candidates=[]
 
     for p in fetch_search_pairs():
@@ -314,7 +320,7 @@ def scan(limit=40,only_meteora=False):
             meme_score,_=memecoin_score(p)
             if meme_score < 35:
                 continue
-            score,row=rank_pair(p)
+            score,row=rank_pair(p, strategy)
             if row["liquidity"] < 500:
                 continue
             row["source"]="DexScreener"
@@ -351,18 +357,19 @@ def scan(limit=40,only_meteora=False):
             "memecoin_score_min":35,
             "unique_tokens":True,
             "memecoin_only":True,
-            "lp_strategy":"balanced-risk-adjusted",
+            "lp_strategy":strategy+"-risk-adjusted",
             "lp_score_primary":True,
             "gmgn_enabled":False,
             "gmgn_mode":"web-reference-only",
-            "only_meteora":only_meteora
+            "only_meteora":only_meteora,
+            "strategy":strategy
         }
     }
 
 if __name__=="__main__":
  import argparse
- ap=argparse.ArgumentParser();ap.add_argument("--limit",type=int,default=40);ap.add_argument("--meteora",action="store_true");a=ap.parse_args()
- print(json.dumps(scan(a.limit,a.meteora),indent=2))
+ ap=argparse.ArgumentParser();ap.add_argument("--limit",type=int,default=40);ap.add_argument("--meteora",action="store_true");ap.add_argument("--strategy",choices=["conservative","balanced","aggressive"],default="balanced");a=ap.parse_args()
+ print(json.dumps(scan(a.limit,a.meteora,a.strategy),indent=2))
 
 
 def fetch_ohlcv(pool_address, limit=200):
