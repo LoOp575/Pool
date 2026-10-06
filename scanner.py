@@ -153,7 +153,7 @@ def review_pair(pool_address, fee_apr=0, horizon_bars=24, mc_paths=1500):
             "p_inside": max(0, 1 - mc.p_out_of_range),
             "p_out_of_range": mc.p_out_of_range,
             "expected_terminal_price": mc.expected_terminal_price,
-            "p05": mc.p05,
+            "p05": mc.p5,
             "p50": mc.p50,
             "p95": mc.p95,
         },
