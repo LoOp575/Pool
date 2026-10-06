@@ -449,43 +449,8 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """DexScreener discovery pipeline. Never searches by coin name/keyword."""
-    diag={
-        "search_queries_total":0,
-        "search_queries_ok":0,
-        "search_pairs_raw":0,
-        "feed_tokens":0,
-        "expanded_tokens":0,
-        "expanded_pairs":0,
-        "fallback_pairs":0,
-        "solana_pairs":0,
-        "errors":[],
-    }
-    tokens=fetch_seed_tokens()
-    diag["feed_tokens"]=len(tokens)
-    diag["expanded_tokens"]=len(tokens)
-
-    pairs,failed_batches=fetch_pairs_batch(tokens)
-    diag["expanded_pairs"]=len(pairs)
-    if failed_batches:
-        diag["errors"].append({
-            "stage":"token-batch",
-            "error":f"{failed_batches} batch request(s) failed"
-        })
-
-    # Still DexScreener, but use its per-token pair endpoint as a safety net.
-    if not pairs:
-        fallback=fetch_pairs_fallback(tokens)
-        diag["fallback_pairs"]=len(fallback)
-        pairs.extend(fallback)
-
-    out={}
-    for p in pairs:
-        if isinstance(p,dict) and p.get("chainId")=="solana" and p.get("pairAddress"):
-            out[p["pairAddress"]]=p
-    diag["solana_pairs"]=len(out)
-    return list(out.values()),diag
-
+    """Backward-compatible alias for the rebuilt DexScreener discovery."""
+    return fetch_dexscreener_pairs()
 
 def _poisson_sample(rng, lam):
     """Exact Poisson sampler for the Merton jump-count process."""
