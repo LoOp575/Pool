@@ -334,50 +334,86 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """Broad Solana discovery with token-level diversity."""
-    pairs={}
-    queries=["pump","meme","pepe","dog","cat","ai","inu","bonk","wif","frog","shib","moon","solana"]
+    """Broad Solana discovery fan-out.
 
-    def one(q):
+    Discovery deliberately uses several independent DexScreener feeds:
+    search queries + latest profiles/boosts/takeovers/ads + token-pair
+    expansion. No scoring gate is applied here. Scoring belongs to scan().
+    """
+    pairs = {}
+
+    def add_pair(p):
+        if not isinstance(p, dict) or p.get("chainId") != "solana":
+            return
+        address = p.get("pairAddress")
+        if address:
+            pairs[address] = p
+
+    # 1) Search fan-out. DexScreener search is capped per query, so use
+    # diverse terms rather than trusting a single query.
+    queries = [
+        "pump", "meme", "pepe", "dog", "cat", "frog", "inu",
+        "bonk", "wif", "shib", "moon", "ai", "solana", "SOL",
+        "community", "fun", "baby", "goat", "frog", "ape"
+    ]
+
+    def search_one(q):
         try:
-            data=get_json(DEX_URL+"/latest/dex/search?"+urllib.parse.urlencode({"q":q}))
-            return data.get("pairs") or []
+            data = get_json(
+                DEX_URL + "/latest/dex/search?" +
+                urllib.parse.urlencode({"q": q})
+            )
+            return data.get("pairs") or [] if isinstance(data, dict) else []
         except Exception:
             return []
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures=[pool.submit(one,q) for q in queries]
+        futures = [pool.submit(search_one, q) for q in queries]
         for f in as_completed(futures):
             for p in f.result():
-                if p.get("chainId")=="solana" and p.get("pairAddress"):
-                    pairs[p["pairAddress"]]=p
+                add_pair(p)
 
-    # Also collect token-profile/boost tokens, then resolve their best pools
-    # concurrently. This adds diversity beyond the handful returned by search.
-    seeds=[]
-    try:
-        for path in ["/token-profiles/latest/v1","/token-boosts/latest/v1","/token-boosts/top/v1"]:
-            data=get_json(DEX_URL+path)
-            for x in data if isinstance(data,list) else []:
-                if x.get("chainId")=="solana" and x.get("tokenAddress"):
-                    seeds.append(x["tokenAddress"])
-    except Exception:
-        pass
+    # 2) Platform discovery feeds. These often surface fresh tokens that
+    # ordinary text search misses.
+    seed_tokens = []
+    seed_paths = [
+        "/token-profiles/latest/v1",
+        "/token-boosts/latest/v1",
+        "/token-boosts/top/v1",
+        "/community-takeovers/latest/v1",
+        "/ads/latest/v1",
+    ]
+    for path in seed_paths:
+        try:
+            data = get_json(DEX_URL + path)
+            for x in data if isinstance(data, list) else []:
+                if x.get("chainId") == "solana" and x.get("tokenAddress"):
+                    seed_tokens.append(x["tokenAddress"])
+        except Exception:
+            continue
 
+    # Also reuse the broader seed collector. This is intentionally additive.
+    for x in fetch_seed_tokens():
+        token = x.get("tokenAddress")
+        if token:
+            seed_tokens.append(token)
+
+    # 3) Expand seed tokens into their actual Solana pairs.
     def pools(token):
         try:
             return get_json(
-                DEX_URL+"/token-pairs/v1/solana/"+urllib.parse.quote(token,safe="")
+                DEX_URL + "/token-pairs/v1/solana/" +
+                urllib.parse.quote(token, safe="")
             ) or []
         except Exception:
             return []
 
+    unique_seeds = list(dict.fromkeys(seed_tokens))[:180]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures=[pool.submit(pools,t) for t in dict.fromkeys(seeds[:60])]
+        futures = [pool.submit(pools, token) for token in unique_seeds]
         for f in as_completed(futures):
             for p in f.result():
-                if p.get("chainId")=="solana" and p.get("pairAddress"):
-                    pairs[p["pairAddress"]]=p
+                add_pair(p)
 
     return list(pairs.values())
 
