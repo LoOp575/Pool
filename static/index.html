@@ -82,7 +82,7 @@ hr{border-color:var(--line)!important}
  <div class="card">
   <div class="section-title">TOP LP OPPORTUNITIES <span class="muted">· click row</span></div>
   <div style="overflow:auto;max-height:285px">
-  <table><thead><tr><th>TOKEN</th><th>FRESH</th><th>PUMP</th><th>VOL/LIQ</th><th>24H</th><th>STAGE</th></tr></thead>
+  <table><thead><tr><th>TOKEN</th><th>FRESH</th><th>24H</th><th>VOL/LIQ</th><th>FLOW</th><th>STAGE</th></tr></thead>
   <tbody id="rows"></tbody></table></div>
  </div>
 
@@ -157,7 +157,7 @@ function render(d){
 
  $('rows').innerHTML=rows.map((x,i)=>{
    const [st,sc]=statusOf(x);
-   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.dex||'—')+' · '+(x.age_h/24).toFixed(1)+'d</div></td><td><b class="'+scoreClass(x.fresh_score)+'">'+x.fresh_score.toFixed(1)+'</b></td><td class="'+(x.pump_pct>=1?'green':x.pump_pct>=0.3?'yellow':'red')+'">+'+(100*(x.pump_pct||0)).toFixed(0)+'%</td><td>'+x.vol_liq.toFixed(1)+'x</td><td class="'+(x.h24>=0?'green':'red')+'">'+x.h24.toFixed(1)+'%</td><td><span class="pill '+(x.pump_stage==='POST_PUMP'?'green':x.pump_stage==='FADE'||x.pump_stage==='RUNAWAY'?'yellow':sc)+'">'+esc((x.pump_stage||st).replace('_',' '))+'</span></td></tr>'
+   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.dex||'—')+' · '+(x.age_h/24).toFixed(1)+'d</div></td><td><b class="'+scoreClass(x.fresh_score)+'">'+x.fresh_score.toFixed(1)+'</b></td><td class="'+(x.h24>=30?'green':x.h24>=5?'yellow':'red')+'">'+(x.h24>=0?'+':'')+x.h24.toFixed(1)+'%</td><td>'+x.vol_liq.toFixed(1)+'x</td><td>'+Number((x.buy_ratio||0)*100).toFixed(0)+'% buys</td><td class="'+(x.h24>=0?'green':'red')+'">'+x.h24.toFixed(1)+'%</td><td><span class="pill '+(x.pump_stage==='POST_PUMP'?'green':x.pump_stage==='FADE'||x.pump_stage==='RUNAWAY'?'yellow':sc)+'">'+esc((x.pump_stage||st).replace('_',' '))+'</span></td></tr>'
  }).join('')||'<tr><td colspan="6" class="empty">Tidak ada kandidat.</td></tr>';
 
  $('heat').innerHTML='<div>TOKEN</div><div>FEE</div><div>RANGE</div><div>RISK</div>'+rows.slice(0,8).map(x=>{
@@ -176,9 +176,9 @@ function render(d){
 function selectPool(i){
  if(!DATA?.rows?.[i])return; selected=DATA.rows[i];
  const x=selected, c=x.lp_components||{}, risk=100-(c.directional_safety||50), [st,sc]=statusOf(x);
- $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill '+sc+'">'+st+'</span><span class="pill">LP '+x.lp_score.toFixed(1)+'</span><span class="pill">'+esc((x.pump_stage||'—').replace('_',' '))+'</span></div><div class="pulse-row"><span>Fresh score</span><b class="'+scoreClass(x.fresh_score)+'">'+Number(x.fresh_score||0).toFixed(1)+'</b></div><div class="pulse-row"><span>Age</span><b>'+(x.age_h/24).toFixed(1)+'d</b></div><div class="pulse-row"><span>Peak pump</span><b class="green">+'+(100*(x.pump_pct||0)).toFixed(0)+'%</b></div><div class="pulse-row"><span>Drawdown</span><b>'+pct(x.drawdown_from_peak||0)+'</b></div><div class="pulse-row"><span>Post-pump volume</span><b>'+((x.volume_persistence||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Recent volume accel.</span><b>'+((x.volume_acceleration||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.v24)+'</b></div>';
+ $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill '+sc+'">'+st+'</span><span class="pill">LP '+x.lp_score.toFixed(1)+'</span><span class="pill">'+esc((x.pump_stage||'—').replace('_',' '))+'</span></div><div class="pulse-row"><span>Fresh score</span><b class="'+scoreClass(x.fresh_score)+'">'+Number(x.fresh_score||0).toFixed(1)+'</b></div><div class="pulse-row"><span>Age</span><b>'+(x.age_h/24).toFixed(1)+'d</b></div><div class="pulse-row"><span>24H change</span><b class="green">'+(x.h24>=0?'+':'')+Number(x.h24||0).toFixed(1)+'%</b></div><div class="pulse-row"><span>Buy ratio</span><b>'+Number((x.buy_ratio||0)*100).toFixed(0)+'%</b></div><div class="pulse-row"><span>Post-pump volume</span><b>'+((x.volume_persistence||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Recent volume accel.</span><b>'+((x.volume_acceleration||0).toFixed(2))+'x</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.v24)+'</b></div>';
  $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Fee potential <b>'+Number(c.fee_potential||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Range quality <b>'+Number(c.range_quality_proxy||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Liquidity quality <b>'+Number(c.liquidity_quality||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Activity <b>'+Number(c.activity||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Directional safety <b>'+Number(c.directional_safety||0).toFixed(0)+'</b></div>';
- $('riskSnap').innerHTML='<b class="'+(risk>55?'red':risk>30?'yellow':'green')+'">Directional risk '+risk.toFixed(0)+'/100</b><br>Stage <b>'+esc(x.pump_stage||'—')+'</b> · Pump +'+(100*(x.pump_pct||0)).toFixed(0)+'% · peak '+(x.pump_age_h||0).toFixed(0)+'h lalu<br>Volume persistence <b>'+((x.volume_persistence||0).toFixed(2))+'x</b> · accel <b>'+((x.volume_acceleration||0).toFixed(2))+'x</b><br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
+ $('riskSnap').innerHTML='<b class="'+(risk>55?'red':risk>30?'yellow':'green')+'">Directional risk '+risk.toFixed(0)+'/100</b><br>Stage <b>'+esc(x.pump_stage||'—')+'</b> · Pump +'+(100*(x.pump_pct||0)).toFixed(0)+'% · Volume persistence <b>'+((x.volume_persistence||0).toFixed(2))+'x</b> · accel <b>'+((x.volume_acceleration||0).toFixed(2))+'x</b><br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
  $('selected').onclick=()=>review(x.pair,(x.base||'?')+' / '+(x.quote||'?'));
 }
 async function review(pair,name){
@@ -194,32 +194,61 @@ async function review(pair,name){
 }
 function renderReview(d,name){
  const m=d.math||{},r=d.range||{},ri=d.risk||{},rb=d.rebalance||{};
- const live=d.confidence==='LIVE';
- const mc=d.monte_carlo||null;
- const risk=Number(ri.score||0);
- const riskCls=risk>70?'red':risk>45?'yellow':'green';
- const lm=d.live_metrics||{};
- const metric=(v,s='—')=>v===null||v===undefined?s:String(v);
- const rangeLower=Number(r.lower||0),rangeUpper=Number(r.upper||0),rangeCenter=Number(r.center||d.price||0);
- let mcCard;
- if(mc){
-   const mr=mc.range||{};
-   mcCard='<div class="card"><div class="section-title">MONTE CARLO · 24H / '+Number(mc.paths||0).toLocaleString()+' PATHS</div><div class="prob"><div>BELOW<h3>'+pct(mc.p_below)+'</h3></div><div>INSIDE<h3 class="green">'+pct(mc.p_inside)+'</h3></div><div>ABOVE<h3>'+pct(mc.p_above)+'</h3></div></div><div class="sub" style="margin-top:10px">P05 '+Number(mc.p05).toPrecision(6)+' · P50 '+Number(mc.p50).toPrecision(6)+' · P95 '+Number(mc.p95).toPrecision(6)+'</div><div class="sub" style="margin-top:7px">Range '+Number(mr.lower||0).toPrecision(6)+' → '+Number(mr.upper||0).toPrecision(6)+' · '+Number(mc.historical_candles||0)+' real candles · '+esc(mc.historical_source||'OHLCV')+'</div></div>';
- }else{
-   mcCard='<div class="card"><div class="section-title">MONTE CARLO</div><div class="value yellow">UNAVAILABLE</div><div class="sub" style="margin-top:7px">'+esc(d.monte_carlo_error||'Historical OHLCV belum cukup tersedia untuk menjalankan Monte Carlo.')+'</div></div>';
- }
+ const a=d.analysis||{}, lm=d.live_metrics||{}, mc=d.monte_carlo||null;
+ const risk=Number(ri.score||0), riskCls=risk>70?'red':risk>45?'yellow':'green';
+ const num=(v,digits=3)=>Number.isFinite(Number(v))?Number(v).toFixed(digits):'—';
+ const moneyPx=v=>Number(v||0).toPrecision(7);
+ const rangeLower=Number(r.lower||0), rangeUpper=Number(r.upper||0), rangeCenter=Number(r.center||d.price||0);
+ const mi=mc?.inputs||{}, mcOut=mc?Number(mc.p_out_of_range||0):null;
+ const mcCard=mc
+  ? '<div class="card"><div class="section-title">MERTON MONTE CARLO · '+Number(mc.horizon_minutes||0)+' MIN · '+Number(mc.paths||0).toLocaleString()+' PATHS</div>'+
+    '<div class="prob"><div>BELOW<h3>'+pct(mc.p_below)+'</h3></div><div>INSIDE<h3 class="green">'+pct(mc.p_inside)+'</h3></div><div>ABOVE<h3>'+pct(mc.p_above)+'</h3></div></div>'+
+    '<div class="sub" style="margin-top:10px">P05 '+moneyPx(mc.p05)+' · P50 '+moneyPx(mc.p50)+' · P95 '+moneyPx(mc.p95)+'</div>'+
+    '<div class="pulse-row" style="margin-top:8px"><span>Expected terminal</span><b>'+moneyPx(mc.expected_terminal_price)+'</b></div>'+
+    '<div class="pulse-row"><span>Ever out of range</span><b class="'+(Number(mc.p_ever_out_of_range||0)>=.30?'red':'green')+'">'+pct(mc.p_ever_out_of_range)+'</b></div>'+
+    '<div class="pulse-row"><span>Mean first escape</span><b>'+(mc.mean_first_escape_bars==null?'—':num(Number(mc.mean_first_escape_bars)*15,0)+' min')+'</b></div>'+
+    '<div class="sub" style="margin-top:8px">Model: <b>'+esc(mc.model||'Merton 1976 jump-diffusion')+'</b><br>Equation: <code>'+esc(mc.model_equation||'')+'</code><br>Calibration: '+esc(mi.calibration||'live snapshot')+' · confidence LOW</div></div>'
+  : '<div class="card"><div class="section-title">MERTON MONTE CARLO</div><div class="value yellow">UNAVAILABLE</div><div class="sub" style="margin-top:7px">'+esc(d.monte_carlo_error||'Simulation gagal. Live movement proxy tetap dipakai untuk risk fallback.')+'</div></div>';
+ const params=mc ? '<div class="card"><div class="section-title">MERTON PARAMETERS · LIVE CALIBRATION</div><div class="heat"><div>PARAM</div><div>VALUE</div><div>ROLE</div><div>STATE</div>'+
+   '<div><b>μ</b></div><div>'+num(mi.drift_annualized,3)+'</div><div class="sub">annual drift</div><div>LIVE</div>'+
+   '<div><b>σ</b></div><div>'+num(mi.volatility_annualized,3)+'</div><div class="sub">annual diffusion vol</div><div>LIVE</div>'+
+   '<div><b>λ</b></div><div>'+num(mi.jump_intensity_annualized,1)+'</div><div class="sub">jumps / year</div><div>POISSON</div>'+
+   '<div><b>μJ</b></div><div>'+num(mi.jump_mean_log,4)+'</div><div class="sub">log jump mean</div><div>LOGNORMAL</div>'+
+   '<div><b>σJ</b></div><div>'+num(mi.jump_volatility_log,4)+'</div><div class="sub">log jump vol</div><div>LOGNORMAL</div>'+
+   '<div><b>κ</b></div><div>'+num(mi.jump_expected_multiplier_minus_one,4)+'</div><div class="sub">E[Y−1]</div><div>COMPENSATOR</div>'+
+   '</div><div class="sub" style="margin-top:8px">Buyer/seller, volume, liquidity, activity and momentum calibrate the parameters. Merton tetap menjadi stochastic simulation layer.</div></div>' : '';
  $('review').innerHTML='<div class="review-shell">'+
- '<div class="review-col">'+
-   '<div><button onclick="back()">← Back to Radar</button></div>'+
-   '<div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+Number(d.price||0).toPrecision(8)+'</div><span class="pill">'+esc(d.regime||'LIVE')+'</span><span class="pill blue">'+esc(d.data_source||'DexScreener')+'</span><span class="pill '+riskCls+'">Risk '+risk.toFixed(1)+'/100</span><span class="pill">'+(rb.rebalance?'REBALANCE '+esc(rb.urgency||'MEDIUM'):'RANGE HEALTHY')+'</span></div>'+
-   '<div class="card"><div class="section-title">RANGE INTELLIGENCE · LIVE PROXY</div><div class="value">'+rangeLower.toPrecision(6)+' → '+rangeUpper.toPrecision(6)+'</div><div class="sub">center '+rangeCenter.toPrecision(6)+' · width '+pct(r.width_pct||0)+'</div><div class="rangebox" style="margin-top:9px"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:18%"><span>'+rangeLower.toPrecision(5)+'</span></div><div class="marker" style="left:50%"><span>CURRENT '+Number(d.price||0).toPrecision(5)+'</span></div><div class="marker" style="left:83%"><span>'+rangeUpper.toPrecision(5)+'</span></div></div></div></div>'+
-   '<div class="card review-stretch"><div class="section-title">DEXSCREENER LIVE DATA</div><div class="review-scroll"><div class="pulse-row"><span>1h change</span><b>'+metric(lm.h1,metric(d.h1, '—'))+'%</b></div><div class="pulse-row"><span>6h change</span><b>'+metric(lm.h6,'—')+'%</b></div><div class="pulse-row"><span>24h change</span><b>'+metric(lm.h24,'—')+'%</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(Number(lm.v1||0))+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(Number(lm.v24||0))+'</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(Number(lm.liquidity||0))+'</b></div><div class="pulse-row"><span>Vol / Liq</span><b>'+Number(lm.vol_liq||0).toFixed(2)+'x</b></div><div class="pulse-row"><span>Buy ratio 1h</span><b>'+pct(lm.buy_ratio||0)+'</b></div></div></div>'+
- '</div>'+
- '<div class="review-col">'+
-   mcCard+
-   '<div class="card"><div class="section-title">RISK ENGINE · LIVE</div><div class="value '+riskCls+'">'+risk.toFixed(1)+'</div><div class="sub">Out-of-range proxy '+pct(ri.out_of_range||0)+'<br>IL proxy '+(ri.il_proxy==null?'N/A':pct(ri.il_proxy))+'<br>Fee yield proxy '+(ri.fee_yield==null?'N/A':pct(ri.fee_yield))+'</div><hr style="border-color:#1b303b;border-width:1px 0 0;margin:10px 0"><div class="small">'+(ri.notes||[]).map(esc).join(' · ')+'</div></div>'+
-   '<div class="card review-stretch"><div class="section-title">LP DECISION</div><div class="value '+riskCls+'">'+(rb.rebalance?'REBALANCE':'RANGE HEALTHY')+'</div><div class="sub" style="margin-top:7px">Confidence: <b>'+esc(d.confidence||'LIVE')+'</b><br>Data source: <b>'+esc(d.data_source||'DexScreener')+'</b><br>Escape proxy: <b>'+pct(ri.out_of_range||0)+'</b></div><div style="margin-top:14px"><div class="section-title">QUICK READ</div><div class="reason"><span class="dotmini"></span>Regime <b>'+esc(d.regime||'—')+'</b></div><div class="reason"><span class="dotmini"></span>1h move <b>'+Number(lm.h1||0).toFixed(1)+'%</b></div><div class="reason"><span class="dotmini"></span>6h move <b>'+Number(lm.h6||0).toFixed(1)+'%</b></div><div class="reason"><span class="dotmini"></span>Range width <b>'+pct(r.width_pct||0)+'</b></div></div></div>'+
-   '<div class="card"><div class="section-title">NOTE</div><div class="sub">Live market berasal dari DexScreener. Monte Carlo memakai real OHLCV hanya saat candle historis tersedia. Tidak ada candle sintetis.</div></div>'+
+ '<div class="review-col"><div><button onclick="back()">← Back to Radar</button></div>'+
+ '<div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+Number(d.price||0).toPrecision(8)+'</div>'+
+ '<span class="pill">'+esc(d.regime||'LIVE')+'</span><span class="pill blue">'+esc(d.data_source||'DexScreener')+'</span>'+
+ '<span class="pill '+riskCls+'">Risk '+risk.toFixed(1)+'/100</span><span class="pill '+(mc?'green':'yellow')+'">'+(mc?'MERTON ACTIVE':'MC FALLBACK')+'</span>'+
+ '<span class="pill">'+(rb.rebalance?'REBALANCE '+esc(rb.urgency||'MEDIUM'):'RANGE HEALTHY')+'</span></div>'+
+ '<div class="card"><div class="section-title">RANGE INTELLIGENCE · LIVE PROXY</div><div class="value">'+rangeLower.toPrecision(6)+' → '+rangeUpper.toPrecision(6)+'</div>'+
+ '<div class="sub">center '+rangeCenter.toPrecision(6)+' · width '+pct(r.width_pct||0)+' · '+esc(r.multipliers?.source||'live')+'</div>'+
+ '<div class="rangebox" style="margin-top:9px"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:18%"><span>'+rangeLower.toPrecision(5)+'</span></div><div class="marker" style="left:50%"><span>CURRENT '+Number(d.price||0).toPrecision(5)+'</span></div><div class="marker" style="left:83%"><span>'+rangeUpper.toPrecision(5)+'</span></div></div></div></div>'+
+ '<div class="card"><div class="section-title">LIVE STATE · MERTON INPUTS</div>'+
+ '<div class="pulse-row"><span>1h / 6h / 24h</span><b>'+num(lm.h1,1)+'% / '+num(lm.h6,1)+'% / '+num(lm.h24,1)+'%</b></div>'+
+ '<div class="pulse-row"><span>Volume 1h / 24h</span><b>'+money(Number(lm.v1||0))+' / '+money(Number(lm.v24||0))+'</b></div>'+
+ '<div class="pulse-row"><span>Liquidity</span><b>'+money(Number(lm.liquidity||0))+'</b></div>'+
+ '<div class="pulse-row"><span>Vol/Liq · 24h/Liq</span><b>'+num(lm.vol_liq,2)+'x · '+num(lm.volume_24_liq,2)+'x</b></div>'+
+ '<div class="pulse-row"><span>Buy / sell 1h</span><b>'+Number(lm.buys_1h||0)+' / '+Number(lm.sells_1h||0)+'</b></div>'+
+ '<div class="pulse-row"><span>Buy pressure</span><b>'+num(lm.buy_pressure,3)+'</b></div>'+
+ '<div class="pulse-row"><span>Volume acceleration</span><b>'+num(lm.volume_acceleration,2)+'x</b></div>'+
+ '<div class="pulse-row"><span>Volume persistence</span><b>'+num(lm.volume_persistence,2)+'</b></div></div>'+
+ '<div class="card"><div class="section-title">FORMULA ENGINE</div>'+
+ '<div class="pulse-row"><span>Discovery score</span><b>'+num(a.score,1)+'</b></div><div class="pulse-row"><span>Fresh score</span><b>'+num(a.fresh_score,1)+'</b></div>'+
+ '<div class="pulse-row"><span>LP score</span><b>'+num(a.lp_score,1)+'</b></div><div class="pulse-row"><span>Meme score</span><b>'+num(a.meme_score,1)+'</b></div>'+
+ '<div class="sub" style="margin-top:8px">Engine '+esc(d.formula_engine||a.formula_engine||'POOL-INTEL')+' · '+esc(a.mode||'LIVE_SNAPSHOT')+'<br>'+esc(a.prediction_note||'Live formulas use current market state.')+'</div></div>'+
+ '</div><div class="review-col">'+mcCard+params+
+ '<div class="card"><div class="section-title">RISK ENGINE · RANGE SURVIVAL</div><div class="value '+riskCls+'">'+risk.toFixed(1)+'</div>'+
+ '<div class="sub">P(out-of-range) <b>'+pct(ri.out_of_range||0)+'</b> · source <b>'+esc(ri.out_of_range_source||'LIVE')+'</b><br>IL proxy '+(ri.il_proxy==null?'N/A':pct(ri.il_proxy))+' · Fee yield '+(ri.fee_yield==null?'N/A':pct(ri.fee_yield))+'</div>'+
+ '<hr style="border-color:#1b303b;border-width:1px 0 0;margin:10px 0"><div class="small">'+(ri.notes||[]).map(esc).join(' · ')+'</div></div>'+
+ '<div class="card"><div class="section-title">LP DECISION</div><div class="value '+riskCls+'">'+(rb.rebalance?'REBALANCE':'RANGE HEALTHY')+'</div>'+
+ '<div class="sub" style="margin-top:7px">Confidence: <b>'+esc(d.confidence||'LIVE')+'</b><br>Data source: <b>'+esc(d.data_source||'DexScreener')+'</b><br>Model status: <b>'+esc(d.model_status||'LIVE_ONLY')+'</b></div>'+
+ '<div style="margin-top:14px"><div class="section-title">QUICK READ</div><div class="reason"><span class="dotmini"></span>Regime <b>'+esc(d.regime||'—')+'</b></div>'+
+ '<div class="reason"><span class="dotmini"></span>1h move <b>'+num(lm.h1,1)+'%</b></div><div class="reason"><span class="dotmini"></span>Buy ratio <b>'+pct(lm.buy_ratio||0)+'</b></div>'+
+ '<div class="reason"><span class="dotmini"></span>Range width <b>'+pct(r.width_pct||0)+'</b></div><div class="reason"><span class="dotmini"></span>MC out-of-range <b>'+(mcOut==null?'—':pct(mcOut))+'</b></div></div></div>'+
+ '<div class="card"><div class="section-title">MODEL HONESTY</div><div class="sub">Merton simulation uses the standard diffusion + Poisson jump + lognormal jump-size structure. Parameter calibration is Pool-specific and snapshot-based because no real OHLCV history is available. This is a <b>LOW-confidence scenario probability</b>, not a guaranteed forecast.</div></div>'+
  '</div></div>';
 }
 function back(){$('review').style.display='none';$('dashboard').classList.remove('hidden');}
