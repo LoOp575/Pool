@@ -159,10 +159,10 @@ def review_pair(pool_address, fee_apr=0, horizon_bars=24, mc_paths=1500):
         },
         "risk": {
             "score": risk.risk_score,
-            "out_of_range": risk.p_out_of_range,
+            "out_of_range": risk.probability_out_of_range,
             "il_proxy": risk.il_proxy,
             "fee_yield": risk.expected_fee_yield,
-            "fee_il_ratio": risk.fee_il_ratio,
+            "fee_il_ratio": risk.fee_to_il_ratio,
             "notes": risk.notes,
         },
         "rebalance": {
