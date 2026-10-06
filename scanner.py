@@ -83,9 +83,9 @@ def rank_pair(p):
       "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"}, "token":(p.get("baseToken") or {}).get("address"), "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))}
 
 def fetch_search_pairs():
-    """Fast broad discovery. Search calls run concurrently to avoid Vercel timeouts."""
+    """Broad Solana discovery with token-level diversity."""
     pairs={}
-    queries=["SOL","USDC","pump","meme","pepe","dog","cat","ai","inu","bonk","wif"]
+    queries=["pump","meme","pepe","dog","cat","ai","inu","bonk","wif","frog","shib","moon","solana"]
 
     def one(q):
         try:
@@ -94,19 +94,46 @@ def fetch_search_pairs():
         except Exception:
             return []
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futures=[pool.submit(one,q) for q in queries]
         for f in as_completed(futures):
             for p in f.result():
                 if p.get("chainId")=="solana" and p.get("pairAddress"):
                     pairs[p["pairAddress"]]=p
+
+    # Also collect token-profile/boost tokens, then resolve their best pools
+    # concurrently. This adds diversity beyond the handful returned by search.
+    seeds=[]
+    try:
+        for path in ["/token-profiles/latest/v1","/token-boosts/latest/v1","/token-boosts/top/v1"]:
+            data=get_json(DEX_URL+path)
+            for x in data if isinstance(data,list) else []:
+                if x.get("chainId")=="solana" and x.get("tokenAddress"):
+                    seeds.append(x["tokenAddress"])
+    except Exception:
+        pass
+
+    def pools(token):
+        try:
+            return get_json(
+                DEX_URL+"/token-pairs/v1/solana/"+urllib.parse.quote(token,safe="")
+            ) or []
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures=[pool.submit(pools,t) for t in dict.fromkeys(seeds[:60])]
+        for f in as_completed(futures):
+            for p in f.result():
+                if p.get("chainId")=="solana" and p.get("pairAddress"):
+                    pairs[p["pairAddress"]]=p
+
     return list(pairs.values())
 
 
 def scan(limit=40,only_meteora=False):
     candidates=[]
-    # Keep the hot path to one discovery stage. The old token->pairs fan-out
-    # could trigger dozens of HTTP requests and hit Vercel execution limits.
+
     for p in fetch_search_pairs():
         try:
             score,row=rank_pair(p)
@@ -119,14 +146,23 @@ def scan(limit=40,only_meteora=False):
         except Exception:
             continue
 
-    dedup={}
+    # IMPORTANT: one token gets one result. If it has several pools, keep
+    # the strongest pool so the table shows different meme coins.
+    by_token={}
     for x in candidates:
-        key=x.get("pair") or ("token:"+x.get("token",""))
-        if key not in dedup or x["score"]>dedup[key]["score"]:
-            dedup[key]=x
+        token=x.get("token") or ""
+        key=token or ("pair:"+str(x.get("pair") or ""))
+        if key not in by_token:
+            by_token[key]=x
+            continue
+        old=by_token[key]
+        old_key=(old["score"],old["v1"],old["liquidity"])
+        new_key=(x["score"],x["v1"],x["liquidity"])
+        if new_key > old_key:
+            by_token[key]=x
 
     rows=sorted(
-        dedup.values(),
+        by_token.values(),
         key=lambda x:(x["score"],x["v1"],x["liquidity"]),
         reverse=True
     )[:limit]
@@ -141,6 +177,7 @@ def scan(limit=40,only_meteora=False):
             "min_1h_pump_dex":0,
             "min_1h_volume_usd_dex":0,
             "min_liquidity_usd_dex":500,
+            "unique_tokens":True,
             "gmgn_enabled":False,
             "gmgn_mode":"web-reference-only",
             "only_meteora":only_meteora
