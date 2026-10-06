@@ -37,7 +37,9 @@ class handler(BaseHTTPRequestHandler):
                 pair = q.get("pair", [""])[0]
                 if not pair:
                     raise ValueError("pair wajib diisi")
-                self._send_json(200, review_pair(pair))
+                horizon = min(max(int(q.get("horizon", ["96"])[0]), 1), 192)
+                paths = min(max(int(q.get("paths", ["2000"])[0]), 200), 5000)
+                self._send_json(200, review_pair(pair, horizon_bars=horizon, mc_paths=paths))
             except Exception as exc:
                 self._send_json(502, {"error": str(exc)})
             return
