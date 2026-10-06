@@ -1,42 +1,172 @@
 <!doctype html>
-<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DLMM LP Radar</title>
+<html lang="id">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>⚡ Pool Intelligence</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#071018;color:#e8f0f5;font:14px system-ui,sans-serif}header{padding:18px 24px;border-bottom:1px solid #20303a;display:flex;justify-content:space-between}.wrap{padding:18px 24px;max-width:1400px;margin:auto}.controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px}button,select{background:#10202a;color:#e8f0f5;border:1px solid #2a404d;border-radius:8px;padding:9px 12px}button{cursor:pointer}.stat,.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card{background:#0d1921;border:1px solid #1c303b;border-radius:12px;padding:14px}.num{font-size:20px;font-weight:800;margin-top:4px}.muted{color:#8da0ad}.small{font-size:12px}.good{color:#5ee6a8}.warn{color:#ffd166}.bad{color:#ff7b8a}table{width:100%;border-collapse:separate;border-spacing:0 7px}th{text-align:left;color:#8296a3;font-size:12px;padding:6px}td{background:#0d1921;padding:11px 8px;border-top:1px solid #1b303b;border-bottom:1px solid #1b303b}td:first-child{border-left:1px solid #1b303b;border-radius:9px 0 0 9px}td:last-child{border-right:1px solid #1b303b;border-radius:0 9px 9px 0}tr.pick{cursor:pointer}tr.pick:hover td{background:#12242e}.token{font-weight:800}.meter{height:5px;background:#172630;border-radius:9px;overflow:hidden}.meter i{display:block;height:100%;background:#57d6a0}.hidden{display:none}.review{margin-top:18px}.range{font-size:26px;font-weight:800;margin:7px 0}.formula{line-height:1.8}.pill{display:inline-block;padding:5px 9px;border:1px solid #29404c;border-radius:99px;margin:3px}.close{float:right}.bar{height:18px;background:#172630;border-radius:8px;overflow:hidden;display:flex;margin:10px 0}.bar b{height:100%;display:block}.center{text-align:center}.back{margin-bottom:10px}@media(max-width:800px){.stat,.grid{grid-template-columns:repeat(2,1fr)}.wrap{padding:12px}header{padding:15px 12px}}
-</style></head>
+*{box-sizing:border-box}body{margin:0;background:#070d13;color:#e8f1f5;font:13px Inter,system-ui,sans-serif}
+:root{--bg:#070d13;--panel:#0c151d;--panel2:#101c25;--line:#1c303b;--muted:#8296a3;--green:#55e6a4;--yellow:#ffd166;--red:#ff7184;--cyan:#54d7ff;--purple:#a78bfa}
+button,select{background:#0d1a23;color:#e8f1f5;border:1px solid #28404c;border-radius:7px;padding:8px 11px}button{cursor:pointer}button:hover{border-color:#4b6978}
+.top{height:56px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 18px;position:sticky;top:0;background:#081018ee;backdrop-filter:blur(12px);z-index:5}
+.brand{font-weight:900;font-size:17px;letter-spacing:.4px}.brand span{color:var(--green)}.status{font-size:11px;color:var(--green);border:1px solid #245743;border-radius:20px;padding:4px 8px;margin-left:8px}
+.wrap{max-width:1600px;margin:auto;padding:14px}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.toolbar .right{margin-left:auto}
+.grid{display:grid;gap:10px}.kpis{grid-template-columns:repeat(6,1fr)}.main{grid-template-columns:1.15fr 2.2fr 1.15fr}.bottom{grid-template-columns:1fr 1fr 1fr}
+.card{background:linear-gradient(180deg,#0d1821,#0a141b);border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
+.label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.8px}.value{font-size:23px;font-weight:850;margin-top:5px}.small{font-size:11px}.muted{color:var(--muted)}.green{color:var(--green)}.yellow{color:var(--yellow)}.red{color:var(--red)}.cyan{color:var(--cyan)}.purple{color:var(--purple)}
+.section-title{font-size:11px;font-weight:800;letter-spacing:.8px;margin-bottom:9px}.sub{font-size:11px;color:var(--muted)}
+.pulse-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #152630}.pulse-row:last-child{border:0}
+.meter{height:6px;background:#172630;border-radius:8px;overflow:hidden;margin-top:7px}.meter i{display:block;height:100%;background:var(--green)}
+table{width:100%;border-collapse:separate;border-spacing:0 5px}th{text-align:left;color:#718692;font-size:10px;padding:5px}td{background:#0d1921;padding:9px 7px;border-top:1px solid #192d38;border-bottom:1px solid #192d38}td:first-child{border-left:1px solid #192d38;border-radius:8px 0 0 8px}td:last-child{border-right:1px solid #192d38;border-radius:0 8px 8px 0}tr.pick{cursor:pointer}tr.pick:hover td{background:#11242e}.token{font-weight:850}.pill{display:inline-block;border:1px solid #2a424e;border-radius:20px;padding:3px 7px;font-size:10px;margin:2px}
+.heat{display:grid;grid-template-columns:1.2fr repeat(3,1fr);gap:4px}.heat div{background:#10202a;border:1px solid #1b323d;padding:7px;border-radius:5px}.barline{height:8px;background:#182a34;border-radius:8px;overflow:hidden}.barline i{display:block;height:100%;background:linear-gradient(90deg,#275c63,#55e6a4)}
+.radar{height:220px;position:relative;border:1px solid #1a303b;border-radius:8px;background:radial-gradient(circle at 50% 50%,#10232c,#09131a 70%);overflow:hidden}.radar:before,.radar:after{content:"";position:absolute;inset:18%;border:1px solid #24404c;border-radius:50%}.radar:after{inset:38%}.axisx,.axisy{position:absolute;background:#203943}.axisx{height:1px;left:7%;right:7%;top:50%}.axisy{width:1px;top:7%;bottom:7%;left:50%}.dot{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 12px #55e6a488;cursor:pointer}.dot.risk{background:var(--red);box-shadow:0 0 12px #ff718488}.dot.warn{background:var(--yellow);box-shadow:0 0 12px #ffd16688}.axislabel{position:absolute;color:#627985;font-size:9px}.toplab{top:7px;left:50%;transform:translateX(-50%)}.botlab{bottom:7px;left:50%;transform:translateX(-50%)}.leftlab{left:7px;top:50%}.rightlab{right:7px;top:50%}
+.rangebox{padding:12px;border:1px solid #1d3843;border-radius:8px;background:#09151c}.rangebar{height:34px;position:relative;margin:12px 4px;background:#14242c;border-radius:6px}.rangeactive{position:absolute;left:18%;right:17%;top:5px;height:24px;border:1px solid #55e6a4aa;background:#55e6a41a;border-radius:5px}.marker{position:absolute;top:0;height:34px;width:2px;background:#e8f1f5}.marker span{position:absolute;top:37px;transform:translateX(-50%);font-size:9px;color:#8296a3;white-space:nowrap}.prob{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:20px}.prob div{background:#0e1d25;border:1px solid #1b323d;padding:8px;border-radius:6px;text-align:center}
+.reason{padding:7px 0;border-bottom:1px solid #172a34}.reason:last-child{border:0}.dotmini{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:5px}
+.review{display:none}.hidden{display:none}.empty{text-align:center;padding:25px;color:var(--muted)}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.main,.bottom{grid-template-columns:1fr}.rightcol{order:3}}@media(max-width:650px){.kpis{grid-template-columns:repeat(2,1fr)}.top{padding:0 10px}.wrap{padding:9px}}
+</style>
+</head>
 <body>
-<header><div><h1 style="margin:0">⚡ DLMM LP Radar</h1><div class="muted">Filter koin → klik → REVIEW rumus & prediksi range</div></div><div id="status" class="muted">idle</div></header>
+<header class="top">
+  <div><span class="brand">⚡ <span>POOL</span> INTELLIGENCE</span><span class="status">● MARKET RADAR</span></div>
+  <div class="muted small" id="clock">--:--:--</div>
+</header>
 <main class="wrap">
-<section id="list">
-<div class="controls"><select id="limit"><option>20</option><option selected>40</option><option>80</option></select><label style="padding:9px"><input id="met" type="checkbox"> Meteora only</label><button onclick="load()">🔎 Scan sekarang</button></div>
-<div class="stat"><div class="card">Candidates<div id="n" class="num">—</div></div><div class="card">Meteora<div id="m" class="num">—</div></div><div class="card">High volume/TVL<div id="v" class="num">—</div></div><div class="card">Avg LP score<div id="s" class="num">—</div></div></div>
-<div class="card" style="margin-top:10px"><b>⬇️ Pilih satu koin untuk REVIEW</b><div class="muted small" style="margin-top:4px">LP Score = fee potential + range quality + volatility quality + liquidity + activity − directional risk. Review lalu menguji range dengan Monte Carlo.</div></div>
-<div style="overflow:auto;margin-top:10px"><table><thead><tr><th>Token</th><th>LP Score</th><th>Meme</th><th>1h</th><th>Vol 1h</th><th>Liquidity</th><th>Buy%</th><th>Vol/TVL</th><th>DEX</th></tr></thead><tbody id="rows"></tbody></table></div>
+<section id="dashboard">
+<div class="toolbar">
+  <select id="limit"><option>20</option><option selected>40</option><option>80</option></select>
+  <select id="mode"><option value="balanced">BALANCED LP</option><option value="conservative">CONSERVATIVE</option><option value="aggressive">AGGRESSIVE MEME</option></select>
+  <label class="small muted"><input id="met" type="checkbox"> Meteora only</label>
+  <button onclick="load()">🔎 SCAN MARKET</button>
+  <div class="right muted small" id="status">ready</div>
+</div>
+
+<div class="grid kpis">
+ <div class="card"><div class="label">Meme pools</div><div class="value" id="kPools">—</div><div class="sub">discovered now</div></div>
+ <div class="card"><div class="label">LP opportunities</div><div class="value green" id="kOpp">—</div><div class="sub">LP score ≥ 70</div></div>
+ <div class="card"><div class="label">High risk</div><div class="value red" id="kRisk">—</div><div class="sub">directional pressure</div></div>
+ <div class="card"><div class="label">Avg LP score</div><div class="value" id="kScore">—</div><div class="sub">balanced engine</div></div>
+ <div class="card"><div class="label">Avg Vol/Liq</div><div class="value cyan" id="kVL">—</div><div class="sub">fee intensity proxy</div></div>
+ <div class="card"><div class="label">Meteora</div><div class="value purple" id="kMet">—</div><div class="sub">eligible pools</div></div>
+</div>
+
+<div class="grid main" style="margin-top:10px">
+ <div class="card">
+  <div class="section-title">MARKET PULSE</div>
+  <div class="pulse-row"><span>Fee intensity</span><b id="pFee">—</b></div>
+  <div class="pulse-row"><span>Liquidity quality</span><b id="pLiq">—</b></div>
+  <div class="pulse-row"><span>Market activity</span><b id="pAct">—</b></div>
+  <div class="pulse-row"><span>Directional safety</span><b id="pSafe">—</b></div>
+  <div class="label" style="margin-top:14px">Meme market composition</div>
+  <div class="meter"><i id="pulseBar" style="width:0%"></i></div>
+  <div class="sub" style="margin-top:6px" id="pulseText">Scan untuk membaca kondisi pasar.</div>
+ </div>
+
+ <div class="card">
+  <div class="section-title">TOP LP OPPORTUNITIES <span class="muted">· click row</span></div>
+  <div style="overflow:auto;max-height:285px">
+  <table><thead><tr><th>TOKEN</th><th>LP</th><th>MEME</th><th>VOL/LIQ</th><th>1H</th><th>STATUS</th></tr></thead>
+  <tbody id="rows"></tbody></table></div>
+ </div>
+
+ <div class="card rightcol">
+  <div class="section-title">WHY THIS POOL?</div>
+  <div id="why"><div class="empty">Pilih kandidat untuk melihat alasan.</div></div>
+  <div class="section-title" style="margin-top:12px">RISK SNAPSHOT</div>
+  <div id="riskSnap" class="sub">Belum ada pool dipilih.</div>
+ </div>
+</div>
+
+<div class="grid bottom" style="margin-top:10px">
+ <div class="card"><div class="section-title">OPPORTUNITY RADAR</div>
+  <div class="radar" id="radar"><div class="axisx"></div><div class="axisy"></div><span class="axislabel toplab">HIGH FEE</span><span class="axislabel botlab">LOW FEE</span><span class="axislabel leftlab">HIGH RISK</span><span class="axislabel rightlab">LOW RISK</span></div>
+ </div>
+ <div class="card"><div class="section-title">POOL HEATMAP</div><div class="heat" id="heat"><div>TOKEN</div><div>FEE</div><div>RANGE</div><div>RISK</div></div></div>
+ <div class="card"><div class="section-title">SELECTED POOL</div><div id="selected"><div class="empty">Belum ada pool dipilih.</div></div></div>
+</div>
 </section>
-<section id="review" class="review hidden"></section>
+
+<section id="review" class="review"></section>
 </main>
 <script>
-const $=x=>document.getElementById(x);
-function money(x){return x>=1e6?"$"+(x/1e6).toFixed(2)+"M":x>=1e3?"$"+(x/1e3).toFixed(1)+"K":"$"+x.toFixed(0)}
-function cls(x){return x>=75?"good":x>=55?"warn":"bad"}
-function pct(x){return (x*100).toFixed(1)+"%"}
-async function load(){ $("status").textContent="scanning…"; try{
-let u="/api/scan?limit="+$("limit").value+"&meteora="+($("met").checked?1:0);let res=await fetch(u);let raw=await res.text();let d;try{d=JSON.parse(raw)}catch(e){throw Error("Server API gagal ("+res.status+"): "+raw.slice(0,180))}if(!res.ok||d.error)throw Error(d.error||("HTTP "+res.status));
-$("n").textContent=d.count;$("m").textContent=d.rows.filter(x=>x.meteora).length;$("v").textContent=d.rows.filter(x=>x.vol_liq>=3).length;$("s").textContent=d.rows.length?(d.rows.reduce((a,x)=>a+x.lp_score,0)/d.rows.length).toFixed(1):"—";
-$("rows").innerHTML=d.rows.map(x=>'<tr class="pick" onclick="review(\''+x.pair+'\',\''+(x.base||"?")+' / '+(x.quote||"?")+'\')"><td><div class="token">'+(x.base||"?")+' / '+(x.quote||"?")+'</div><div class="muted small">'+x.age_h.toFixed(1)+'h · klik REVIEW</div></td><td><span class="'+cls(x.lp_score)+'">'+x.lp_score.toFixed(1)+'</span><div class="meter"><i style="width:'+x.lp_score+'%"></i></div></td><td>'+x.memecoin_score.toFixed(0)+'</td><td>'+x.h1.toFixed(1)+'%</td><td>'+money(x.v1)+'</td><td>'+money(x.liquidity)+'</td><td>'+pct(x.buy_ratio)+'</td><td>'+x.vol_liq.toFixed(1)+'x</td><td>'+ (x.dex||"—")+'</td></tr>').join("")||'<tr><td colspan="9" class="center">Tidak ada kandidat.</td></tr>';
-$("status").textContent="updated "+new Date().toLocaleTimeString()
-}catch(e){$("status").textContent="error: "+e.message}}
-async function review(pair,name){$("list").classList.add("hidden");$("review").classList.remove("hidden");$("review").innerHTML='<button class="back" onclick="back()">← Kembali ke hasil filter</button><div class="card">Memproses data + rumus untuk <b>'+name+'</b>…</div>';
-try{let d=await fetch("/api/review?pair="+encodeURIComponent(pair)).then(r=>r.json());if(d.error)throw Error(d.error);renderReview(d,name)}catch(e){$("review").innerHTML='<button class="back" onclick="back()">← Kembali</button><div class="card bad">Review gagal: '+e.message+'<br><span class="muted small">Pastikan pool punya riwayat OHLCV yang cukup.</span></div>'}}
-function renderReview(d,name){let m=d.math,r=d.range,mc=d.monte_carlo,ri=d.risk,rb=d.rebalance;
-$("review").innerHTML='<button class="back" onclick="back()">← Kembali ke hasil filter</button>'+
-'<div class="card"><div class="muted small">REVIEW · '+name+'</div><h2 style="margin:6px 0">'+Number(d.price).toPrecision(8)+'</h2><span class="pill">'+d.regime+'</span><span class="pill">Risk '+ri.score.toFixed(1)+'/100</span><span class="pill">'+(rb.rebalance?"REBALANCE "+rb.urgency:"Range sehat")+'</span></div>'+
-'<div class="card" style="margin-top:10px"><div class="muted small">🎯 PREDIKSI RANGE LP</div><div class="range">'+r.lower.toPrecision(7)+' ← '+r.center.toPrecision(7)+' → '+r.upper.toPrecision(7)+'</div><div class="muted">Width '+pct(r.width_pct)+' · Center adalah fair/mean-adjusted price</div><div class="bar"><b style="width:50%"></b></div><div class="center small">LOWER · CURRENT/CENTER · UPPER</div></div>'+
-'<div class="grid" style="margin-top:10px"><div class="card"><b>ATR</b><div class="num">'+m.atr.toPrecision(6)+'</div><span class="muted">'+pct(m.atr_pct)+'</span></div><div class="card"><b>Volatility ratio</b><div class="num">'+m.volatility_ratio.toFixed(2)+'x</div></div><div class="card"><b>Z-Score</b><div class="num">'+m.z_score.toFixed(2)+'</div></div><div class="card"><b>Trend</b><div class="num">'+m.trend_strength.toFixed(2)+'</div></div></div>'+
-'<div class="grid" style="margin-top:10px"><div class="card formula"><b>📐 RUMUS RANGE</b><br>Width = ATR% × Trend × Volatility × Entropy × Mean-Reversion<br><span class="muted">ATR '+r.multipliers.atr_pct.toFixed(4)+' · Trend '+r.multipliers.trend.toFixed(2)+' · Vol '+r.multipliers.volatility.toFixed(2)+' · Entropy '+r.multipliers.entropy.toFixed(2)+' · MR '+r.multipliers.mean_reversion.toFixed(2)+'</span></div><div class="card formula"><b>📊 MARKET MATH</b><br>Volume pressure: '+m.volume_pressure.toFixed(3)+'<br>Entropy: '+m.entropy.toFixed(3)+'<br>Liquidity force: '+m.liquidity_force.toFixed(3)+'<br>Mean reversion: '+m.mean_reversion_force.toFixed(3)+'<br>RVOL: '+m.rvol.toFixed(2)+'x</div></div>'+
-'<div class="card" style="margin-top:10px"><b>🎲 MONTE CARLO · '+mc.paths+' paths / '+mc.horizon_bars+' bars</b><div class="grid" style="margin-top:8px"><div>P(Below)<h3>'+pct(mc.p_below)+'</h3></div><div>P(Inside)<h3>'+pct(mc.p_inside)+'</h3></div><div>P(Above)<h3>'+pct(mc.p_above)+'</h3></div><div>P(Out)</div><h3>'+pct(mc.p_out_of_range)+'</h3></div><div class="muted">Expected '+mc.expected_terminal_price.toPrecision(7)+' · P5 '+mc.p05.toPrecision(7)+' · P50 '+mc.p50.toPrecision(7)+' · P95 '+mc.p95.toPrecision(7)+'</div></div>'+
-'<div class="grid" style="margin-top:10px"><div class="card"><b>⚠️ RISK</b><div class="num">'+ri.score.toFixed(1)+'/100</div><div>IL proxy '+pct(ri.il_proxy)+'<br>Fee yield '+pct(ri.fee_yield)+'</div><div class="muted small">'+(ri.notes||[]).join(" · ")+'</div></div><div class="card"><b>🔄 REBALANCE</b><div class="num">'+(rb.rebalance?"YES":"NO")+'</div><div>'+rb.urgency+'</div><div class="muted small">'+(rb.reasons||[]).join(" · ")+'</div></div></div>'+
-'<div class="card" style="margin-top:10px"><b>Catatan</b><div class="muted small">Prediksi ini statistik, bukan jaminan harga. Bin ID belum dihitung karena active bin ID + bin step Meteora harus diambil dari metadata pool yang sebenarnya.</div></div>'}
-function back(){$("review").classList.add("hidden");$("list").classList.remove("hidden")}
+const $=id=>document.getElementById(id);
+let DATA=null, selected=null;
+const money=x=>x>=1e6?'$'+(x/1e6).toFixed(2)+'M':x>=1e3?'$'+(x/1e3).toFixed(1)+'K':'$'+Number(x||0).toFixed(0);
+const pct=x=>(Number(x||0)*100).toFixed(1)+'%';
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+function scoreClass(x){return x>=75?'green':x>=55?'yellow':'red'}
+function statusOf(x){
+ const risk=100-(x.lp_components?.directional_safety||50);
+ if(x.lp_score>=75 && risk<35)return ['ACTIVE','green'];
+ if(x.lp_score>=60)return ['WATCH','yellow'];
+ return ['RISK','red'];
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function load(){
+ $('status').textContent='scanning…';
+ try{
+  const u='/api/scan?limit='+$('limit').value+'&meteora='+($('met').checked?1:0);
+  const res=await fetch(u); const d=await res.json(); if(!res.ok||d.error)throw Error(d.error||'scan gagal');
+  DATA=d; render(d);
+  $('status').textContent='updated '+new Date().toLocaleTimeString();
+ }catch(e){$('status').textContent='error: '+e.message}
+}
+function render(d){
+ const rows=d.rows||[];
+ $('kPools').textContent=d.count;
+ $('kOpp').textContent=rows.filter(x=>x.lp_score>=70).length;
+ $('kRisk').textContent=rows.filter(x=>(x.lp_components?.directional_safety||100)<45).length;
+ $('kScore').textContent=rows.length?(rows.reduce((a,x)=>a+x.lp_score,0)/rows.length).toFixed(1):'—';
+ $('kVL').textContent=rows.length?(rows.reduce((a,x)=>a+x.vol_liq,0)/rows.length).toFixed(1)+'x':'—';
+ $('kMet').textContent=rows.filter(x=>x.meteora).length;
+
+ const avg=k=>rows.length?rows.reduce((a,x)=>a+(x.lp_components?.[k]||0),0)/rows.length:0;
+ $('pFee').textContent=avg('fee_potential').toFixed(0);
+ $('pLiq').textContent=avg('liquidity_quality').toFixed(0);
+ $('pAct').textContent=avg('activity').toFixed(0);
+ $('pSafe').textContent=avg('directional_safety').toFixed(0);
+ const pulse=avg('fee_potential');
+ $('pulseBar').style.width=clamp(pulse,0,100)+'%';
+ $('pulseText').textContent=pulse>75?'Volume/liq tinggi: fee opportunity sedang panas.':pulse>50?'Aktivitas cukup sehat untuk dipantau.':'Pasar relatif sepi atau liquidity berat.';
+
+ $('rows').innerHTML=rows.map((x,i)=>{
+   const [st,sc]=statusOf(x);
+   return '<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.dex||'—')+'</div></td><td><b class="'+scoreClass(x.lp_score)+'">'+x.lp_score.toFixed(1)+'</b></td><td>'+x.memecoin_score.toFixed(0)+'</td><td>'+x.vol_liq.toFixed(1)+'x</td><td class="'+(x.h1>=0?'green':'red')+'">'+x.h1.toFixed(1)+'%</td><td><span class="pill '+sc+'">'+st+'</span></td></tr>'
+ }).join('')||'<tr><td colspan="6" class="empty">Tidak ada kandidat.</td></tr>';
+
+ $('heat').innerHTML='<div>TOKEN</div><div>FEE</div><div>RANGE</div><div>RISK</div>'+rows.slice(0,8).map(x=>{
+   const fee=x.lp_components?.fee_potential||0, range=x.lp_components?.range_quality_proxy||0, risk=100-(x.lp_components?.directional_safety||0);
+   return '<div><b>'+esc(x.base||'?')+'</b></div><div><div class="barline"><i style="width:'+fee+'%"></i></div><span class="sub">'+fee.toFixed(0)+'</span></div><div><div class="barline"><i style="width:'+range+'%"></i></div><span class="sub">'+range.toFixed(0)+'</span></div><div class="'+(risk>55?'red':risk>30?'yellow':'green')+'">'+risk.toFixed(0)+'</div>'
+ }).join('');
+
+ $('radar').querySelectorAll('.dot').forEach(e=>e.remove());
+ rows.slice(0,15).forEach((x,i)=>{
+   const risk=100-(x.lp_components?.directional_safety||50), fee=x.lp_components?.fee_potential||50;
+   const dot=document.createElement('div'); dot.className='dot '+(risk>55?'risk':risk>30?'warn':''); dot.title=(x.base||'?')+' LP '+x.lp_score.toFixed(1);
+   dot.style.left=(8+clamp((100-risk)*.84,0,84))+'%'; dot.style.top=(88-clamp(fee*.80,0,80))+'%'; dot.onclick=()=>selectPool(i); $('radar').appendChild(dot);
+ });
+ if(rows.length)selectPool(0);
+}
+function selectPool(i){
+ if(!DATA?.rows?.[i])return; selected=DATA.rows[i];
+ const x=selected, c=x.lp_components||{}, risk=100-(c.directional_safety||50), [st,sc]=statusOf(x);
+ $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+' / '+esc(x.quote||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill '+sc+'">'+st+'</span><span class="pill">LP '+x.lp_score.toFixed(1)+'</span><span class="pill">MEME '+x.memecoin_score.toFixed(0)+'</span></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(x.v1)+'</b></div><div class="pulse-row"><span>Vol/Liq</span><b>'+x.vol_liq.toFixed(1)+'x</b></div><div class="pulse-row"><span>Buy pressure</span><b>'+pct(x.buy_ratio)+'</b></div>';
+ $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Fee potential <b>'+Number(c.fee_potential||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Range quality <b>'+Number(c.range_quality_proxy||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Liquidity quality <b>'+Number(c.liquidity_quality||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Activity <b>'+Number(c.activity||0).toFixed(0)+'</b></div><div class="reason"><span class="dotmini"></span>Directional safety <b>'+Number(c.directional_safety||0).toFixed(0)+'</b></div>';
+ $('riskSnap').innerHTML='<b class="'+(risk>55?'red':risk>30?'yellow':'green')+'">Directional risk '+risk.toFixed(0)+'/100</b><br>5m '+x.m5.toFixed(1)+'% · 1h '+x.h1.toFixed(1)+'% · 24h '+x.h24.toFixed(1)+'%<br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
+ $('selected').onclick=()=>review(x.pair,(x.base||'?')+' / '+(x.quote||'?'));
+}
+async function review(pair,name){
+ $('dashboard').classList.add('hidden'); $('review').style.display='block';
+ $('review').innerHTML='<button onclick="back()">← Back to Radar</button><div class="card" style="margin-top:10px">Menghitung Pool Lab untuk <b>'+esc(name)+'</b>…</div>';
+ try{const d=await fetch('/api/review?pair='+encodeURIComponent(pair)).then(r=>r.json());if(d.error)throw Error(d.error);renderReview(d,name)}
+ catch(e){$('review').innerHTML='<button onclick="back()">← Back</button><div class="card red" style="margin-top:10px">Review gagal: '+esc(e.message)+'</div>'}
+}
+function renderReview(d,name){
+ const m=d.math,r=d.range,mc=d.monte_carlo,ri=d.risk,rb=d.rebalance;
+ $('review').innerHTML='<button onclick="back()">← Back to Radar</button><div class="grid" style="grid-template-columns:1.4fr 1fr;margin-top:10px"><div class="card"><div class="label">POOL LAB · '+esc(name)+'</div><div class="value">'+Number(d.price).toPrecision(8)+'</div><span class="pill">'+esc(d.regime)+'</span><span class="pill">Risk '+ri.score.toFixed(1)+'/100</span><span class="pill">'+(rb.rebalance?'REBALANCE '+rb.urgency:'RANGE HEALTHY')+'</span></div><div class="card"><div class="label">RANGE INTELLIGENCE</div><div class="value">'+r.lower.toPrecision(6)+' → '+r.upper.toPrecision(6)+'</div><div class="sub">center '+r.center.toPrecision(6)+' · width '+pct(r.width_pct)+'</div></div></div><div class="grid bottom" style="margin-top:10px"><div class="card"><div class="section-title">MONTE CARLO</div><div class="prob"><div>BELOW<h3>'+pct(mc.p_below)+'</h3></div><div>INSIDE<h3 class="green">'+pct(mc.p_inside)+'</h3></div><div>ABOVE<h3>'+pct(mc.p_above)+'</h3></div></div><div class="sub" style="margin-top:12px">P05 '+mc.p05.toPrecision(6)+' · P50 '+mc.p50.toPrecision(6)+' · P95 '+mc.p95.toPrecision(6)+'</div></div><div class="card"><div class="section-title">MARKET MATH</div><div class="pulse-row"><span>ATR</span><b>'+m.atr.toPrecision(6)+' ('+pct(m.atr_pct)+')</b></div><div class="pulse-row"><span>Volatility</span><b>'+m.volatility.toFixed(4)+'</b></div><div class="pulse-row"><span>Trend</span><b>'+m.trend_strength.toFixed(3)+'</b></div><div class="pulse-row"><span>Mean reversion</span><b>'+m.mean_reversion_force.toFixed(3)+'</b></div><div class="pulse-row"><span>Volume pressure</span><b>'+m.volume_pressure.toFixed(3)+'</b></div></div><div class="card"><div class="section-title">RISK ENGINE</div><div class="value '+(ri.score>70?'red':ri.score>45?'yellow':'green')+'">'+ri.score.toFixed(1)+'</div><div class="sub">Out of range '+pct(ri.out_of_range)+'<br>IL proxy '+pct(ri.il_proxy)+'<br>Fee yield proxy '+pct(ri.fee_yield)+'</div><hr style="border-color:#1b303b;border-width:1px 0 0;margin:10px 0"><div class="small">'+(ri.notes||[]).join(' · ')+'</div></div></div><div class="card" style="margin-top:10px"><div class="section-title">RANGE MAP</div><div class="rangebox"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:18%"><span>'+r.lower.toPrecision(5)+'</span></div><div class="marker" style="left:50%"><span>CURRENT '+Number(d.price).toPrecision(5)+'</span></div><div class="marker" style="left:83%"><span>'+r.upper.toPrecision(5)+'</span></div></div></div></div><div class="card" style="margin-top:10px"><div class="section-title">NOTES</div><div class="sub">Monte Carlo adalah alat probabilitas, bukan prediksi pasti. Bin ID masih membutuhkan metadata pool Meteora yang sebenarnya. Range dan risk perlu dibaca bersama kondisi market terbaru.</div></div>';
+}
+function back(){$('review').style.display='none';$('dashboard').classList.remove('hidden');}
+setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()},1000);
+$('mode').addEventListener('change',()=>{if(DATA)render(DATA)});
 load();
-</script></body></html>
+</script>
+</body></html>
