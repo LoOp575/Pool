@@ -1059,7 +1059,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 break
             try:
                 meme_score,_=memecoin_score(p)
-                if meme_score < 12:
+                if meme_score < 5:
                     continue
 
                 _,row=rank_pair(p,strategy)
@@ -1067,7 +1067,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 if token in existing:
                     continue
 
-                if row["liquidity"] < 300:
+                if row["liquidity"] < 250:
                     continue
 
                 age_h=row["age_h"]
@@ -1078,7 +1078,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 v24=row["v24"]
                 liq=row["liquidity"]
 
-                if not 1 <= age_h <= 168:
+                if not 0.25 <= age_h <= 168:
                     continue
 
                 t1=p.get("txns") or {}
@@ -1086,9 +1086,9 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 txns=int(h1tx.get("buys") or 0)+int(h1tx.get("sells") or 0)
 
                 active=(
-                    v1 >= max(200,liq*0.004) or
-                    v24 >= max(1500,liq*0.025) or
-                    txns >= 25
+                    v1 >= max(100,liq*0.002) or
+                    v24 >= max(750,liq*0.0125) or
+                    txns >= 15
                 )
                 if not active:
                     continue
@@ -1098,7 +1098,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 if h1 >= 120 and h24 >= 600:
                     continue
 
-                if row["fresh_score"] < 18:
+                if row["fresh_score"] < 10:
                     continue
 
                 if only_meteora and not row["meteora"]:
@@ -1162,12 +1162,12 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
         "source":"DexScreener" if rows else "none",
         "filters":{
             "min_liquidity_usd_dex":300,
-            "memecoin_score_min":12,
+            "memecoin_score_min":5,
             "unique_tokens":True,
             "memecoin_only":True,
-            "age_hours_min":1,
+            "age_hours_min":0.25,
             "age_hours_max":168,
-            "fresh_score_min":18,
+            "fresh_score_min":10,
             "ignition_preferred":False,
             "runaway_excluded":True,
             "historical_provider":False,
