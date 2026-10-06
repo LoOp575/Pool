@@ -149,12 +149,15 @@ def fetch_dexscreener_pairs():
     diag["expanded_pairs"] = len(pairs)
     diag["errors"].extend(batch_errors[:8])
 
-    # Always merge a small fallback set. This avoids the old failure mode
-    # where one non-empty but stale batch prevented fallback discovery.
-    fallback, fallback_errors = fetch_pairs_fallback(tokens)
-    diag["fallback_pairs"] = len(fallback)
-    diag["errors"].extend(fallback_errors[:8])
-    pairs.extend(fallback)
+    # Only spend extra requests when the main token endpoint failed or
+    # returned nothing. This keeps the scanner fast on Vercel.
+    fallback = []
+    fallback_errors = []
+    if not pairs or failed_batches:
+        fallback, fallback_errors = fetch_pairs_fallback(tokens[:24])
+        diag["fallback_pairs"] = len(fallback)
+        diag["errors"].extend(fallback_errors[:8])
+        pairs.extend(fallback)
 
     unique = {}
     for pair in pairs:
