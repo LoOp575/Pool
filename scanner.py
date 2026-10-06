@@ -383,11 +383,11 @@ def fetch_search_pairs():
 
 
 
-def historical_candles(pair_address, timeframe="hour", limit=168):
+def historical_candles(pair_address, timeframe="minute", aggregate=15, limit=96):
     """Fetch real OHLCV candles for analysis only."""
     url=("https://api.geckoterminal.com/api/v2/networks/solana/pools/"
          + urllib.parse.quote(str(pair_address), safe="")
-         + f"/ohlcv/{timeframe}?aggregate=1&limit={int(limit)}")
+         + f"/ohlcv/{timeframe}?aggregate={int(aggregate)}&limit={int(limit)}")
     data=get_json(url)
     rows=((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
     candles=[]
@@ -402,7 +402,7 @@ def historical_candles(pair_address, timeframe="hour", limit=168):
         raise ValueError(f"OHLCV historis tidak cukup: {len(candles)}/30 candle")
     return candles
 
-def monte_carlo_review(pair_address, live_price, horizon_bars=24, paths=2000):
+def monte_carlo_review(pair_address, live_price, horizon_bars=96, paths=2000):
     """Run the real Monte Carlo engine from real historical candles."""
     candles=historical_candles(pair_address)
     closes=[c.close for c in candles]
@@ -410,7 +410,7 @@ def monte_carlo_review(pair_address, live_price, horizon_bars=24, paths=2000):
     regime=classify_regime(m)
     r=range_engine(m,regime,closes)
     mc=bootstrap_monte_carlo(closes,r.lower_price,r.upper_price,horizon_bars,paths)
-    risk=risk_engine(m,r,mc,fee_apr=0,horizon_days=horizon_bars/24)
+    risk=risk_engine(m,r,mc,fee_apr=0,horizon_days=horizon_bars/96)
     return {
         "paths":mc.paths,"horizon_bars":mc.horizon_bars,
         "p_below":mc.p_below,"p_inside":max(0,1-mc.p_out_of_range),
@@ -418,7 +418,7 @@ def monte_carlo_review(pair_address, live_price, horizon_bars=24, paths=2000):
         "expected_terminal_price":mc.expected_terminal_price,
         "p05":mc.p5,"p50":mc.p50,"p95":mc.p95,
         "current_price":live_price,"historical_candles":len(candles),
-        "historical_source":"GeckoTerminal OHLCV","regime":regime.value,
+        "historical_source":"GeckoTerminal OHLCV 15m","regime":regime.value,
         "range":{"lower":r.lower_price,"center":r.center_price,"upper":r.upper_price,"width_pct":r.width_pct},
         "math":{"atr_pct":m.atr_pct,"volatility":m.volatility,"volatility_ratio":m.volatility_ratio,
                 "z_score":m.z_score,"trend_strength":m.trend_strength,"volume_pressure":m.volume_pressure,
@@ -490,7 +490,7 @@ def _live_review(pair):
     mc=None
     mc_error=None
     try:
-        mc=monte_carlo_review(p.get("pairAddress"),float(p.get("priceUsd") or 0),24,2000)
+        mc=monte_carlo_review(p.get("pairAddress"),float(p.get("priceUsd") or 0),96,2000)
     except Exception as exc:
         mc_error=str(exc)
     ch = p.get("priceChange") or {}
