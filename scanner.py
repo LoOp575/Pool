@@ -905,7 +905,7 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 
 
 def scan(limit=40, only_meteora=False, strategy="balanced"):
-    """DexScreener meme-coin radar.
+    """DexScreener target scanner.
 
     The scanner only discovers and displays candidates. All intelligence,
     LP math and prediction happen later in Review.
@@ -998,8 +998,6 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             price = float(p.get("priceUsd") or 0)
             buy_ratio_1h = safe_div(buys_1h, total_1h, 0.5)
 
-            meme_score, meme_reasons = memecoin_score(p)
-
             row = {
                 "token": token,
                 "base": symbol,
@@ -1028,15 +1026,13 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
                 "h1": h1,
                 "h6": h6,
                 "h24": h24,
-                "meme_score": round(meme_score, 2),
-                "meme_reasons": meme_reasons,
                 "pump_signal": max(h1, h6, h24) > 0,
                 "pump_window": (
                     "1H" if h1 > 0 else
                     "6H" if h6 > 0 else
                     "24H" if h24 > 0 else None
                 ),
-                "scan_tier": "DEXSCREENER_MEME_DISCOVERY",
+                "scan_tier": "DEXSCREENER_DISCOVERY",
                 "scanner_role": "FILTER_ONLY",
                 "source": "DexScreener",
                 "history_available": False,
@@ -1095,7 +1091,7 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             "discovery_source": "DexScreener API",
             "age_hours_min": 0.25,
             "age_hours_max": 168,
-            "meme_identity_required": "DexScreener search discovery",
+            "meme_identity_required": False,
             "requires_live_volume": True,
             "requires_live_activity": True,
             "scanner_role": "FILTER_ONLY",
