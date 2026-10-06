@@ -538,6 +538,7 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
         "p_inside": max(0, 1 - p_below - p_above),
         "p_above": p_above,
         "p_out_of_range": p_below + p_above,
+        "p_survive_range": 0.0,
         "expected_terminal_price": sum(terminals) / n,
         "p05": q(0.05),
         "p50": q(0.50),
@@ -582,6 +583,7 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
     else:
         result["mean_first_escape_bars"] = None
         result["p_ever_out_of_range"] = 0.0
+    result["p_survive_range"] = 1.0 - result["p_ever_out_of_range"]
     return result
 
 def dex_pair(pair_address):
@@ -654,7 +656,7 @@ def _final_intelligence(p, row, mc, range_plan, strategy="balanced"):
     fee = float(row["lp_components"].get("fee_potential", 0))
     range_quality = float(row["lp_components"].get("range_quality_proxy", 0))
     directional_safety = float(row["lp_components"].get("directional_safety", 0))
-    inside = float(mc.get("p_inside", 0)) if mc else 0.0
+    inside = float(mc.get("p_survive_range", 1.0 - mc.get("p_ever_out_of_range", 1))) if mc else 0.0
     escape = float(mc.get("p_ever_out_of_range", mc.get("p_out_of_range", 1))) if mc else 1.0
     below = float(mc.get("p_below", 0)) if mc else 0.0
     above = float(mc.get("p_above", 0)) if mc else 0.0
