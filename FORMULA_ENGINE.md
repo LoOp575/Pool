@@ -36,7 +36,7 @@ Current scanner formulas include:
 - Runaway penalty
 - LP Opportunity discovery score
 
-The scanner must not pretend that snapshot data is historical data.
+The scanner must not pretend that snapshot data is historical data. A live-state Merton scenario is explicitly labeled as a snapshot model and is not presented as historical calibration.
 
 ## Stage 2: Live snapshot analysis
 
@@ -108,6 +108,29 @@ The target is not the coin with the biggest pump.
 
 A highly aggressive one-way move can generate volume while simultaneously making an LP range difficult to survive.
 
+## Monte Carlo status
+
+The Review dashboard now runs a **Merton 1976 jump-diffusion Monte Carlo** directly from the live DexScreener state.
+
+The simulation layer uses the standard structure:
+
+`dS/S = (μ - λκ)dt + σdW + (Y - 1)dN`
+
+with:
+
+- `N` = Poisson jump-count process
+- `Y = exp(N(μJ, σJ²))` = lognormal jump multiplier
+- `κ = E[Y - 1]`
+- diffusion volatility `σ`
+- drift `μ`
+- jump intensity `λ`
+
+The equation and simulation are standard Merton. The parameter calibration is Pool-specific because DexScreener-only live snapshots do not provide a return time series.
+
+Live calibration inputs include price movement across M5/H1/H6/H24, buy/sell pressure, 1h and 24h volume, turnover, transaction activity, liquidity, and volume acceleration/persistence.
+
+The Review probability is therefore a **LOW-confidence scenario probability**, not a statistically estimated historical probability. The dashboard exposes Merton parameters, terminal percentiles, below/inside/above range probabilities, ever-out-of-range probability, and first-escape timing.
+
 ## Formula status
 
 | Formula | Current state |
@@ -123,7 +146,7 @@ A highly aggressive one-way move can generate volume while simultaneously making
 | Historical volatility | HISTORICAL ONLY |
 | Entropy | HISTORICAL ONLY |
 | Mean reversion | HISTORICAL ONLY |
-| Monte Carlo | HISTORICAL ONLY |
+| Monte Carlo | ACTIVE · LIVE SNAPSHOT SCENARIO; HISTORICAL CALIBRATION NOT AVAILABLE |
 | True fee yield | NOT CLAIMED from snapshot |
 | True IL | HISTORICAL / POSITION DATA REQUIRED |
 
@@ -131,6 +154,6 @@ A highly aggressive one-way move can generate volume while simultaneously making
 
 Current scanner/review formula engine identifier:
 
-`POOL-INTEL-1`
+`POOL-INTEL-2`
 
 This version is intentionally a foundation. Individual formulas will be discussed and tuned one at a time rather than replacing them with generic defaults.
