@@ -334,13 +334,18 @@ def rank_pair(p, strategy="balanced"):
     }
 
 def fetch_search_pairs():
-    """Broad Solana discovery fan-out.
+    """Fast, observable Solana discovery radar.
 
-    Discovery deliberately uses several independent DexScreener feeds:
-    search queries + latest profiles/boosts/takeovers/ads + token-pair
-    expansion. No scoring gate is applied here. Scoring belongs to scan().
+    Keep the request budget small enough for Vercel/serverless execution.
+    Discovery is intentionally broad; scoring/filtering happens in scan().
     """
     pairs = {}
+    diag = {
+        "search_queries_total": 0, "search_queries_ok": 0, "search_pairs_raw": 0,
+        "seed_feeds_total": 0, "seed_feeds_ok": 0, "seed_tokens": 0,
+        "pair_expansion_total": 0, "pair_expansion_ok": 0,
+        "pair_expansion_pairs": 0, "solana_pairs": 0, "errors": []
+    }
 
     def add_pair(p):
         if not isinstance(p, dict) or p.get("chainId") != "solana":
@@ -349,74 +354,75 @@ def fetch_search_pairs():
         if address:
             pairs[address] = p
 
-    # 1) Search fan-out. DexScreener search is capped per query, so use
-    # diverse terms rather than trusting a single query.
-    queries = [
-        "pump", "meme", "pepe", "dog", "cat", "frog", "inu",
-        "bonk", "wif", "shib", "moon", "ai", "solana", "SOL",
-        "community", "fun", "baby", "goat", "frog", "ape"
-    ]
+    def record_error(stage, detail):
+        if len(diag["errors"]) < 12:
+            diag["errors"].append({"stage": stage, "error": str(detail)[:180]})
 
-    def search_one(q):
+    # Search a small, diverse set. Avoid duplicate search work from
+    # fetch_seed_tokens(), which previously multiplied the request count.
+    queries = ["meme", "pump", "pepe", "dog", "cat", "bonk", "wif", "solana"]
+    diag["search_queries_total"] = len(queries)
+
+    for q in queries:
         try:
             data = get_json(
                 DEX_URL + "/latest/dex/search?" +
                 urllib.parse.urlencode({"q": q})
             )
-            return data.get("pairs") or [] if isinstance(data, dict) else []
-        except Exception:
-            return []
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(search_one, q) for q in queries]
-        for f in as_completed(futures):
-            for p in f.result():
+            diag["search_queries_ok"] += 1
+            raw = data.get("pairs") or [] if isinstance(data, dict) else []
+            diag["search_pairs_raw"] += len(raw)
+            for p in raw:
                 add_pair(p)
+        except Exception as exc:
+            record_error("search:"+q, exc)
 
-    # 2) Platform discovery feeds. These often surface fresh tokens that
-    # ordinary text search misses.
-    seed_tokens = []
+    # Fresh platform feeds are useful for launches that don't match search text.
     seed_paths = [
         "/token-profiles/latest/v1",
         "/token-boosts/latest/v1",
         "/token-boosts/top/v1",
-        "/community-takeovers/latest/v1",
-        "/ads/latest/v1",
     ]
+    seed_tokens = []
     for path in seed_paths:
+        diag["seed_feeds_total"] += 1
         try:
             data = get_json(DEX_URL + path)
+            diag["seed_feeds_ok"] += 1
             for x in data if isinstance(data, list) else []:
                 if x.get("chainId") == "solana" and x.get("tokenAddress"):
                     seed_tokens.append(x["tokenAddress"])
-        except Exception:
-            continue
+        except Exception as exc:
+            record_error("seed:"+path, exc)
 
-    # Also reuse the broader seed collector. This is intentionally additive.
-    for x in fetch_seed_tokens():
-        token = x.get("tokenAddress")
-        if token:
-            seed_tokens.append(token)
+    # Expand only a bounded number of unique seeds. The old 180-token fan-out
+    # could exhaust serverless time/rate limits before scan() even started.
+    unique_seeds = list(dict.fromkeys(seed_tokens))[:48]
+    diag["seed_tokens"] = len(unique_seeds)
 
-    # 3) Expand seed tokens into their actual Solana pairs.
     def pools(token):
         try:
             return get_json(
                 DEX_URL + "/token-pairs/v1/solana/" +
                 urllib.parse.quote(token, safe="")
             ) or []
-        except Exception:
+        except Exception as exc:
+            record_error("pair:"+token, exc)
             return []
 
-    unique_seeds = list(dict.fromkeys(seed_tokens))[:180]
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    diag["pair_expansion_total"] = len(unique_seeds)
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futures = [pool.submit(pools, token) for token in unique_seeds]
         for f in as_completed(futures):
-            for p in f.result():
-                add_pair(p)
+            result = f.result()
+            if result is not None:
+                diag["pair_expansion_ok"] += 1
+                diag["pair_expansion_pairs"] += len(result)
+                for p in result:
+                    add_pair(p)
 
-    return list(pairs.values())
-
+    diag["solana_pairs"] = len(pairs)
+    return list(pairs.values()), diag
 
 
 def _poisson_sample(rng, lam):
