@@ -102,11 +102,14 @@ const pct=x=>(Number(x||0)*100).toFixed(1)+'%';
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 function scoreClass(x){return x>=75?'green':x>=55?'yellow':'red'}
 function statusOf(x){
- const age=x.age_h||0;
+ const age=x.age_h;
+ if(age==null||!Number.isFinite(Number(age)))return ['AGE ?','yellow'];
  if(age<=24)return ['<24H','green'];
  if(age<=72)return ['1-3D','yellow'];
  return ['3-7D','yellow'];
 }
+const ageDays=x=>Number.isFinite(Number(x?.age_days))?Number(x.age_days):null;
+const ageTxt=(x,d=1)=>{const a=ageDays(x);return a==null?'?':a.toFixed(d)};
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function load(){
  $('status').textContent='scanning…';
@@ -126,13 +129,13 @@ function render(d){
  const chains=Object.entries(dd.chains||{}).map(([k,v])=>k.toUpperCase()+': '+v).join(' · ');
  $('funnel').textContent='FOUND '+Number(f.discovered||0)+' · PAIRS '+Number(dd.pairs||0)+(chains?' · '+chains:'')+(errors?' · ERR '+errors:'');
  if(!rows.length) $('status').textContent=d.discovery_status==='NO_PAIRS'?'DexScreener tidak mengembalikan pair.':'Pair ditemukan, tetapi tidak lolos filter.';
- $('rows').innerHTML=rows.map((x,i)=>'<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div></td><td><b>'+esc((x.chain||x.chainId||'?').toUpperCase())+'</b><div class="sub">'+esc(x.dex||'?')+'</div></td><td>'+Number(x.age_days||0).toFixed(1)+'d</td><td>'+money(x.volume_1h||0)+'</td><td>'+Number(x.buys_1h||0)+'</td><td>'+Number(x.sells_1h||0)+'</td><td>'+money(x.liquidity||0)+'</td></tr>').join('')||'<tr><td colspan="7" class="empty">Tidak ada kandidat.</td></tr>';
+ $('rows').innerHTML=rows.map((x,i)=>'<tr class="pick" onclick="selectPool('+i+')"><td><div class="token">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div></td><td><b>'+esc((x.chain||x.chainId||'?').toUpperCase())+'</b><div class="sub">'+esc(x.dex||'?')+'</div></td><td>'+ageTxt(x)+'d</td><td>'+money(x.volume_1h||0)+'</td><td>'+Number(x.buys_1h||0)+'</td><td>'+Number(x.sells_1h||0)+'</td><td>'+money(x.liquidity||0)+'</td></tr>').join('')||'<tr><td colspan="7" class="empty">Tidak ada kandidat.</td></tr>';
  if(rows.length) selectPool(0);
 }function selectPool(i){
  if(!DATA?.rows?.[i])return; selected=DATA.rows[i];
  const x=selected;
- $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill">'+esc(statusOf(x)[0])+'</span><span class="pill">'+esc(x.age_days.toFixed(1))+'d</span></div><div class="pulse-row"><span>Age</span><b>'+x.age_days.toFixed(2)+'d</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(x.volume_1h)+'</b></div><div class="pulse-row"><span>Volume 6h</span><b>'+money(x.volume_6h)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.volume_24h)+'</b></div><div class="pulse-row"><span>Buy 1h</span><b class="green">'+x.buys_1h+'</b></div><div class="pulse-row"><span>Sell 1h</span><b class="red">'+x.sells_1h+'</b></div><div class="pulse-row"><span>Buy ratio</span><b>'+Number((x.buy_ratio_1h||0)*100).toFixed(0)+'%</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div>';
- $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Pump <b>'+esc(x.pump_window||'LIVE')+'</b></div><div class="reason"><span class="dotmini"></span>Volume 1h <b>'+money(x.volume_1h)+'</b></div><div class="reason"><span class="dotmini"></span>Buy / Sell <b>'+x.buys_1h+' / '+x.sells_1h+'</b></div><div class="reason"><span class="dotmini"></span>Age <b>'+x.age_days.toFixed(2)+'d</b></div>';
+ $('selected').innerHTML='<div class="token" style="font-size:18px">'+esc(x.base||'?')+'</div><div class="sub">'+esc(x.name||'')+'</div><div style="margin:10px 0"><span class="pill">'+esc(statusOf(x)[0])+'</span><span class="pill">'+esc(ageTxt(x))+'d</span></div><div class="pulse-row"><span>Age</span><b>'+ageTxt(x,2)+'d</b></div><div class="pulse-row"><span>Volume 1h</span><b>'+money(x.volume_1h)+'</b></div><div class="pulse-row"><span>Volume 6h</span><b>'+money(x.volume_6h)+'</b></div><div class="pulse-row"><span>Volume 24h</span><b>'+money(x.volume_24h)+'</b></div><div class="pulse-row"><span>Buy 1h</span><b class="green">'+x.buys_1h+'</b></div><div class="pulse-row"><span>Sell 1h</span><b class="red">'+x.sells_1h+'</b></div><div class="pulse-row"><span>Buy ratio</span><b>'+Number((x.buy_ratio_1h||0)*100).toFixed(0)+'%</b></div><div class="pulse-row"><span>Liquidity</span><b>'+money(x.liquidity)+'</b></div>';
+ $('why').innerHTML='<div class="reason"><span class="dotmini"></span>Pump <b>'+esc(x.pump_window||'LIVE')+'</b></div><div class="reason"><span class="dotmini"></span>Volume 1h <b>'+money(x.volume_1h)+'</b></div><div class="reason"><span class="dotmini"></span>Buy / Sell <b>'+x.buys_1h+' / '+x.sells_1h+'</b></div><div class="reason"><span class="dotmini"></span>Age <b>'+ageTxt(x,2)+'d</b></div>';
  $('riskSnap').innerHTML='<b>FLOW</b> · BUY '+x.buys_1h+' · SELL '+x.sells_1h+' · 24H VOL '+money(x.volume_24h)+'<br><span class="muted">Klik token untuk deep Review + Monte Carlo.</span>';
  $('selected').onclick=()=>review(x.pair,(x.base||'?')+' / '+(x.quote||'?'));
 }
@@ -154,7 +157,7 @@ function renderReview(d,name){
  const px=v=>{const n=Number(v||0);return Number.isFinite(n)&&n>0?(n<0.001?n.toPrecision(6):n.toFixed(6)):'—'};
  const pct01=v=>pct(Number(v||0));
  const price=Number(d.price||0), lo=Number(r.lower||0), hi=Number(r.upper||0);
- const below=Number(mc?.p_below||0), inside=Number(mc?.p_survive_range ?? mc?.p_inside ?? 0), above=Number(mc?.p_above||0);
+ const below=Number(mc?.p_below||0), inside=Number(mc?.p_inside ?? mc?.p_survive_range ?? 0), above=Number(mc?.p_above||0);
  const escape=Number(mc?.p_ever_out_of_range ?? ri.out_of_range ?? 0);
  const balance=above-below;
  const direction=balance>0.12?'NAIK':balance<-0.12?'TURUN':'SEIMBANG';
@@ -168,9 +171,18 @@ function renderReview(d,name){
  const decisionText=intel.action_reason||'Tunggu kondisi lebih stabil sebelum membuka posisi.';
  const finalScore=Number(intel.score||0);
  const escapeBars=mc?.mean_first_escape_bars==null?null:Number(mc.mean_first_escape_bars);
+ const hm=Number(mc?.horizon_minutes||0);
+ const horizonTxt=hm>=1440?'24 JAM':hm>=120?Math.round(hm/60)+' JAM':hm>0?hm+' MENIT':'24 JAM';
+ const model=String(mc?.model||'Merton jump-diffusion');
+ const histCandles=Number(d.history||0);
+ const mh=d.math||{};
+ const hasHist=Number(mh.atr)>0;
+ const feeApr=Number(ri.fee_apr||0);
+ const hasFee=ri.fee_yield!=null&&Number.isFinite(Number(ri.fee_yield));
  const escapeText=escapeBars==null?'Belum terdeteksi':escapeBars<4?'< 1 jam':escapeBars<16?'1–4 jam':escapeBars<48?'4–12 jam':'> 12 jam';
  const position=hi>lo?Math.max(0,Math.min(100,(price-lo)/(hi-lo)*100)):50;
  const fee=Number(a.lp_components?.fee_potential||0), rq=Number(a.lp_components?.range_quality_proxy||0), ds=Number(a.lp_components?.directional_safety||0);
+ const meme=Number(a.meme_score||0), fresh=Number(a.fresh_score||0);
  const volumeRatio=Number(lm.vol_liq||0);
  const totalProb=Math.max(below+inside+above,0.000001);
  const wBelow=below/totalProb, wInside=inside/totalProb, wAbove=above/totalProb;
@@ -200,20 +212,22 @@ function renderReview(d,name){
    (intel.warnings||[]).slice(0,2).map(x=>reason(false,'Peringatan',x)).join('')+
  '</div>'+
  '<div class="card"><div class="section-title">RANGE LP · AREA FEE</div>'+
-   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div class="value" style="font-size:16px">'+px(lo)+' → '+px(hi)+'</div><span class="sub">Lebar '+num(r.width_pct,1)+'%</span></div>'+
+   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div class="value" style="font-size:16px">'+px(lo)+' → '+px(hi)+'</div><span class="sub">Lebar '+num(Number(r.width_pct||0)*100,1)+'%</span></div>'+
    '<div class="rangebox" style="margin-top:9px"><div class="rangebar"><div class="rangeactive"></div><div class="marker" style="left:'+position+'%"><span>SEKARANG</span></div></div><div style="display:flex;justify-content:space-between;font-size:7px;color:var(--muted)"><span>BAWAH</span><span>ATAS</span></div></div>'+
    '<div class="pulse-row" style="margin-top:5px"><span>Posisi harga dalam range</span><b>'+num(position,0)+'%</b></div>'+
-   '<div class="pulse-row"><span>Potensi range jebol</span><b class="'+rangeCls+'">'+pct01(escape)+'</b></div>+
+   '<div class="pulse-row"><span>Potensi range jebol</span><b class="'+rangeCls+'">'+pct01(escape)+'</b></div>'+
    '<div class="pulse-row"><span>Perkiraan waktu jebol</span><b>'+escapeText+'</b></div>'+
  '</div>'+
  '</div>'+
  '<div class="review-col">'+
- '<div class="card"><div class="section-title">DALAM 24 JAM, KEMUNGKINANNYA</div>'+
+ '<div class="card"><div class="section-title">DALAM '+horizonTxt+', KEMUNGKINANNYA</div>'+
    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px">'+
      metric('TURUN',pct01(below),'red')+metric('TETAP DI RANGE',pct01(inside),'green')+metric('NAIK',pct01(above),'blue')+
    '</div>'+outcome+
    '<div class="pulse-row" style="margin-top:10px"><span>Harga yang paling sering muncul</span><b>'+px(mc?.p50)+'</b></div>'+
    '<div class="pulse-row"><span>Rentang kemungkinan</span><b>'+px(mc?.p05)+' → '+px(mc?.p95)+'</b></div>'+
+   '<div class="pulse-row"><span>Model simulasi</span><b>'+esc(model)+'</b></div>'+
+   '<div class="pulse-row"><span>Candle historis</span><b>'+(histCandles?histCandles+' candle asli':'belum ada')+'</b></div>'+
  '</div>'+
  '<div class="card"><div class="section-title">KONDISI PASAR SEKARANG</div>'+
    '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:7px">'+
@@ -224,25 +238,44 @@ function renderReview(d,name){
    '</div>'+
    '<div class="sub" style="margin-top:9px">Pembacaan ini berasal dari data pasar live. Mesin di belakang layar memakai kondisi tersebut untuk menjalankan simulasi.</div>'+
  '</div>'+
+ (hasHist?
+ '<div class="card"><div class="section-title">MATH HISTORICAL · '+esc(intel.regime||d.regime||'-')+'</div>'+
+   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:7px">'+
+     metric('ATR%',num(Number(mh.atr_pct)*100,2)+'%')+
+     metric('VOL RATIO',num(mh.volatility_ratio,2)+'x')+
+     metric('Z-SCORE',num(mh.z_score,2))+
+     metric('TREND',num(mh.trend_strength,2))+
+     metric('ENTROPY',num(mh.entropy,2))+
+     metric('MEAN REVERT',num(mh.mean_reversion_force,2))+
+   '</div>'+
+   '<div class="sub" style="margin-top:9px">Dihitung dari '+histCandles+' candle OHLCV asli (GeckoTerminal) — ATR/z-score/entropy beneran, bukan snapshot.</div>'+
+ '</div>':'')+
  '<div class="card"><div class="section-title">NILAI UNTUK LP</div>'+
-   '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px">'+
+   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:7px">'+
      metric('PELUANG FEE',num(fee,0)+'/100',fee>=70?'green':fee>=50?'yellow':'red')+
      metric('KUALITAS RANGE',num(rq,0)+'/100',rq>=70?'green':rq>=50?'yellow':'red')+
      metric('KEAMANAN ARAH',num(ds,0)+'/100',ds>=70?'green':ds>=50?'yellow':'red')+
+     metric('MEME IDENTITY',num(meme,0)+'/100',meme>=70?'green':meme>=35?'yellow':'red')+
+     metric('FRESH ENTRY',num(fresh,0)+'/100',fresh>=70?'green':fresh>=50?'yellow':'red')+
    '</div>'+
  '</div>'+
  '<div class="card"><div class="section-title">REKOMENDASI</div>'+
    '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px"><div class="value '+decisionCls+'">'+decision+'</div><span class="pill">INTEL '+num(finalScore,0)+'/100</span></div>'+
    '<div class="sub" style="margin-top:7px">'+esc(decisionText)+'</div>'+
    '<div class="pulse-row" style="margin-top:6px"><span>Data confidence</span><b>'+esc(intel.data_quality?.confidence||'LOW')+'</b></div>'+
-   '<div class="pulse-row"><span>Data historis nyata</span><b>'+((intel.data_quality?.real_ohlcv_available)?'YA':'BELUM')+'</b></div>'+
+   '<div class="pulse-row"><span>Data historis nyata</span><b>'+((intel.data_quality?.real_ohlcv_available)?'YA · '+histCandles+' CANDLE':'BELUM')+'</b></div>'+
+   '<div class="pulse-row"><span>Sumber data</span><b>'+esc(String(d.data_source||'DexScreener'))+'</b></div>'+
+   (hasFee?'<div class="pulse-row"><span>Fee APR pool</span><b>'+pct01(feeApr)+'</b></div>'+
+           '<div class="pulse-row"><span>Fee yield horizon</span><b>'+pct01(Number(ri.fee_yield))+'</b></div>'+
+           '<div class="pulse-row"><span>IL proxy</span><b>'+pct01(Number(ri.il_proxy||0))+'</b></div>':'')+
  '</div>'+
  '<div class="card"><div class="section-title">CATATAN SINGKAT</div><div class="sub">Hasil ini adalah probabilitas, bukan kepastian harga. Simulasi dihitung ulang dari kondisi pasar terbaru.</div></div>'+
  '</div></div>';
 }
 function back(){$('review').style.display='none';$('dashboard').classList.remove('hidden');}
 setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()},1000);
-$('mode').addEventListener('change',()=>load());
+const modeEl=$('mode');
+if(modeEl)modeEl.addEventListener('change',()=>load());
 load();
 </script>
 </body></html>

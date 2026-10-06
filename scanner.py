@@ -23,7 +23,253 @@ def pct(x):return float(x or 0)
 def score01(x):return clamp(float(x),0,1)
 def safe_div(a,b,d=0):return a/b if b else d
 
-FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
+FORMULA_ENGINE_VERSION = "POOL-INTEL-4"
+
+# --- Jalur A: OHLCV asli (GeckoTerminal + Meteora) -----------------------------
+# GeckoTerminal menyediakan candle OHLCV publik tanpa API key. Review memakai
+# sumber ini untuk mengaktifkan jalur historical (math/range/bootstrap dari
+# candle nyata). Bila gagal, Review tetap jalan di jalur snapshot — tidak
+# pernah membuat candle sintetis.
+GT_URL = "https://api.geckoterminal.com/api/v2"
+METEORA_DLMM_URL = "https://dlmm.datapi.meteora.ag"
+EXT_TIMEOUT = 6
+MIN_HISTORICAL_CANDLES = 30
+
+# DexScreener chainId -> GeckoTerminal network id (yang berbeda dari chainId).
+GT_NETWORKS = {
+    "ethereum": "eth", "bsc": "bsc", "polygon": "polygon_pos",
+    "avax": "avalanche", "avalanche": "avalanche", "fantom": "fantom",
+    "cronos": "cronos", "celo": "celo", "harmony": "harmony",
+    "linea": "linea", "scroll": "scroll", "zksync": "zksync",
+    "mantle": "mantle", "aurora": "aurora", "klaytn": "kaia", "kaia": "kaia",
+    "moonbeam": "moonbeam", "berachain": "berachain", "sui": "sui",
+    "aptos": "aptos", "sei": "sei", "tron": "tron", "near": "near",
+    "injective": "injective", "stellar": "stellar", "monad": "monad",
+    "hyperliquid": "hyperliquid", "solana": "solana",
+}
+
+def gt_network(chain):
+    c = str(chain or "").strip().lower()
+    return GT_NETWORKS.get(c, c)
+
+def _ext_json(url, timeout=EXT_TIMEOUT):
+    if url.startswith(GT_URL) and not _gt_budget_ok():
+        raise RuntimeError("GeckoTerminal rate limit: kuota per menit tercapai")
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except Exception as exc:
+        # HTTP 429 -> jeda agresif supaya review berikutnya langsung fallback snapshot.
+        if getattr(exc, "code", None) == 429 and url.startswith(GT_URL):
+            _GT_WINDOW["cooldown_until"] = time.time() + 45
+        raise
+
+# Kuota hemat untuk API publik GeckoTerminal (tanpa API key): ~30 call/menit.
+_GT_WINDOW = {"start": 0.0, "count": 0, "cooldown_until": 0.0}
+_GT_MAX_PER_MIN = 26
+
+def _gt_budget_ok():
+    now = time.time()
+    if now < _GT_WINDOW["cooldown_until"]:
+        return False
+    if now - _GT_WINDOW["start"] >= 60:
+        _GT_WINDOW["start"] = now
+        _GT_WINDOW["count"] = 0
+    if _GT_WINDOW["count"] >= _GT_MAX_PER_MIN:
+        _GT_WINDOW["cooldown_until"] = _GT_WINDOW["start"] + 60
+        return False
+    _GT_WINDOW["count"] += 1
+    return True
+
+def parse_ohlcv(rows):
+    """GeckoTerminal ohlcv_list: [unix_ts, open, high, low, close, volume] (descending).
+
+    Baris rusak/invalid dilewati; hasil diurutkan menaik per timestamp.
+    """
+    out = []
+    for row in rows or []:
+        try:
+            ts, o, h, l, c, v = (float(row[i]) for i in range(6))
+        except (TypeError, ValueError, IndexError):
+            continue
+        if min(o, h, l, c) <= 0 or v < 0:
+            continue
+        if not all(map(math.isfinite, (o, h, l, c, v))):
+            continue
+        out.append(Candle(int(ts), o, h, l, c, v))
+    out.sort(key=lambda x: x.timestamp)
+    return out
+
+def _gt_search_candidates(pair_address, token_address, net0, limit=2):
+    """Kandidat cadangan dari pencarian GeckoTerminal (network pool + base token cocok)."""
+    out = []
+    seen = set()
+    for query in (pair_address, token_address):
+        if not query or len(out) >= limit:
+            continue
+        try:
+            data = _ext_json(
+                f"{GT_URL}/search/pools?query={urllib.parse.quote(str(query), safe='')}"
+            )
+        except Exception:
+            continue
+        hits = []
+        for item in (data.get("data") or []):
+            attrs = item.get("attributes") or {}
+            addr = attrs.get("address")
+            rels = item.get("relationships") or {}
+            base_id = str(((rels.get("base_token") or {}).get("data") or {}).get("id") or "")
+            pid = str(item.get("id") or "")
+            net = pid.split("_", 1)[0] if "_" in pid else pid
+            if token_address and base_id and not base_id.lower().endswith(str(token_address).lower()):
+                continue
+            if not net or not addr:
+                continue
+            hits.append((0 if net == net0 else 1, net, addr))
+        hits.sort()
+        for _, net, addr in hits:
+            key = (net, str(addr).lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((net, str(addr)))
+            if len(out) >= limit:
+                break
+    return out
+
+def fetch_ohlcv(chain, pair_address, token_address=None):
+    """Ambil candle OHLCV asli dari GeckoTerminal. Tidak pernah melempar error.
+
+    - Coba pool langsung; hanya resolve via pencarian bila pool tidak ditemukan.
+    - Cascade aggregate 15 -> 5 -> 1 menit supaya pool muda pun tetap >= 30 candle.
+    - Ada kuota per-menit: bila tercapai/429, Review langsung fallback snapshot.
+    Mengembalikan (candles, diag); bila candles kosong, diag['error'] menjelaskan alasannya.
+    """
+    diag = {"source": "GeckoTerminal", "network": None, "pool": None,
+            "aggregate": None, "candles": 0, "error": None}
+    if not pair_address:
+        diag["error"] = "pair kosong"
+        return [], diag
+    net0 = gt_network(chain)
+    candidates = [(net0, str(pair_address))] if net0 else []
+    tried, searched, got_any = set(), False, False
+    last_error = None
+    idx = 0
+    while idx < len(candidates):
+        net, pool = candidates[idx]
+        idx += 1
+        key = (net, pool.lower())
+        if key in tried:
+            continue
+        tried.add(key)
+        for aggregate in (15, 5, 1):
+            url = (f"{GT_URL}/networks/{net}/pools/{urllib.parse.quote(pool, safe='')}"
+                   f"/ohlcv/minute?aggregate={aggregate}&limit=300")
+            try:
+                data = _ext_json(url)
+            except Exception as exc:
+                # 404 = pool tidak ada di network ini; jangan coba aggregate lain.
+                last_error = str(exc)[:160]
+                break
+            rows = ((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+            candles = parse_ohlcv(rows)
+            if candles:
+                got_any = True
+            if len(candles) >= MIN_HISTORICAL_CANDLES:
+                diag.update(network=net, pool=pool, aggregate=aggregate,
+                            candles=len(candles), error=None)
+                return candles, diag
+            last_error = f"pool muda: {len(candles)} candle < {MIN_HISTORICAL_CANDLES}"
+        # Pool tidak ditemukan/tidak ada candle sama sekali -> sekali resolve via pencarian.
+        if not searched and not got_any:
+            searched = True
+            for net2, addr2 in _gt_search_candidates(pair_address, token_address, net0):
+                if (net2, addr2.lower()) not in tried:
+                    candidates.append((net2, addr2))
+    diag["error"] = str(last_error or "OHLCV tidak tersedia")
+    return [], diag
+
+def fetch_meteora_pool(pair_address):
+    """Metadata pool DLMM asli dari Meteora (fee APR, bin_step, TVL).
+
+    Mengembalikan None bila pair bukan pool DLMM Meteora atau API tidak
+    menemukannya. Dipakai untuk fee APR aktual + bin_step (tanpa menebak
+    active bin).
+    """
+    if not pair_address:
+        return None
+    data = _ext_json(f"{METEORA_DLMM_URL}/pools/{urllib.parse.quote(str(pair_address), safe='')}")
+    config = data.get("pool_config") or {}
+    out = {
+        "source": "Meteora datapi",
+        "address": data.get("address"),
+        "apr": data.get("apr"),
+        "apy": data.get("apy"),
+        "tvl": data.get("tvl"),
+        "current_price": data.get("current_price"),
+        "base_fee_pct": config.get("base_fee_pct"),
+        "bin_step": config.get("bin_step"),
+    }
+    if out["apr"] is None and out["bin_step"] is None:
+        return None
+    return out
+
+def _historical_block(candles, bar_minutes, horizon_bars, mc_paths, fee_apr=0.0):
+    """Jalur A: OHLCV asli -> math -> regime -> range -> bootstrap MC -> risk."""
+    m = math_engine(candles)
+    regime = classify_regime(m)
+    closes = [c.close for c in candles]
+    r = range_engine(m, regime, closes)
+    horizon_bars = max(1, int(horizon_bars))
+    # Budget komputasi: paths x bars dibatasi supaya Review tetap cepat.
+    budget = clamp(400_000 // horizon_bars, 300, max(300, int(mc_paths)))
+    res = bootstrap_monte_carlo(closes, r.lower_price, r.upper_price, horizon_bars, int(budget))
+    p_inside = max(0.0, 1.0 - res.p_below - res.p_above)
+    horizon_days = horizon_bars * max(1, int(bar_minutes)) / 1440.0
+    risk = risk_engine(m, r, res, fee_apr, horizon_days)
+    return {
+        "candles": len(candles),
+        "bar_minutes": int(bar_minutes),
+        "regime": regime.value,
+        "math": {
+            "price": m.price, "atr": m.atr, "atr_pct": m.atr_pct,
+            "volatility": m.volatility, "volatility_ratio": m.volatility_ratio,
+            "z_score": m.z_score, "trend_strength": m.trend_strength,
+            "volume_pressure": m.volume_pressure, "entropy": m.entropy,
+            "liquidity_force": m.liquidity_force,
+            "mean_reversion_force": m.mean_reversion_force, "rvol": m.rvol,
+        },
+        "range": {
+            "lower": r.lower_price, "center": r.center_price, "upper": r.upper_price,
+            "width_pct": r.width_pct, "multipliers": r.multipliers,
+            "source": "Jalur A: range_engine (ATR% x multiplier)",
+        },
+        "monte_carlo": {
+            "paths": res.paths,
+            "horizon_bars": res.horizon_bars,
+            "horizon_minutes": res.horizon_bars * int(bar_minutes),
+            "p_below": res.p_below,
+            "p_inside": p_inside,
+            "p_above": res.p_above,
+            "p_out_of_range": res.p_out_of_range,
+            "p_ever_out_of_range": res.p_out_of_range,
+            "p_survive_range": 1.0 - res.p_out_of_range,
+            "expected_terminal_price": res.expected_terminal_price,
+            "p05": res.p5,
+            "p50": res.p50,
+            "p95": res.p95,
+            "mean_first_escape_bars": res.mean_first_escape_bars,
+            "current_price": m.price,
+            "historical_candles": len(candles),
+            "historical_source": "GeckoTerminal OHLCV",
+            "model": "bootstrap Monte Carlo (historical log-returns)",
+            "model_equation": "S(t+dt) = S(t) * exp(sample log-return riil)",
+            "confidence": "MEDIUM",
+            "range": {"lower": r.lower_price, "upper": r.upper_price},
+        },
+        "risk": risk,
+    }
 
 
 def fetch_seed_tokens():
@@ -563,6 +809,9 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
 
     p_below = below / n
     p_above = above / n
+    # Kontrak payload review: p_out_of_range == p_ever_out_of_range (pernah
+    # menyentuh batas); posisi harga akhir horizon hanya oleh below/inside/above.
+    p_ever = len(first_escape_bars) / n
     result = {
         "paths": n,
         "horizon_bars": int(horizon_bars),
@@ -570,8 +819,12 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
         "p_below": p_below,
         "p_inside": max(0, 1 - p_below - p_above),
         "p_above": p_above,
-        "p_out_of_range": p_below + p_above,
-        "p_survive_range": 0.0,
+        "p_out_of_range": p_ever,
+        "p_ever_out_of_range": p_ever,
+        "p_survive_range": 1.0 - p_ever,
+        "mean_first_escape_bars": (
+            sum(first_escape_bars) / len(first_escape_bars) if first_escape_bars else None
+        ),
         "expected_terminal_price": sum(terminals) / n,
         "p05": q(0.05),
         "p50": q(0.50),
@@ -610,13 +863,6 @@ def snapshot_monte_carlo(price, m5, h1, h6, h24, volume_1h, volume_24h, liquidit
         },
         "range": {"lower": lower, "upper": upper},
     }
-    if first_escape_bars:
-        result["mean_first_escape_bars"] = sum(first_escape_bars) / len(first_escape_bars)
-        result["p_ever_out_of_range"] = len(first_escape_bars) / n
-    else:
-        result["mean_first_escape_bars"] = None
-        result["p_ever_out_of_range"] = 0.0
-    result["p_survive_range"] = 1.0 - result["p_ever_out_of_range"]
     return result
 
 def dex_pair(pair_address):
@@ -676,13 +922,15 @@ def _live_analysis(p, strategy="balanced"):
     }, row
 
 
-def _final_intelligence(p, row, mc, range_plan, strategy="balanced"):
+def _final_intelligence(p, row, mc, range_plan, strategy="balanced",
+                        data_quality=None, regime=None):
     """Single decision layer for the LP objective.
 
     Scanner scores discovery only. This layer combines the live market state,
-    Merton range-survival scenario, LP quality proxies, and safety gates into
-    one human-facing decision. No historical OHLCV or Meteora bin metadata is
-    invented here.
+    Monte Carlo range-survival scenario, LP quality proxies, and safety gates
+    into one human-facing decision. No historical OHLCV or Meteora bin metadata
+    is invented here: data_quality/regime come from the caller so that the
+    historical path (real candles) can report what it actually used.
     """
     lm = row["live_metrics"]
     lp = float(row["lp_score"])
@@ -765,7 +1013,7 @@ def _final_intelligence(p, row, mc, range_plan, strategy="balanced"):
         decision = "TUNGGU"
         action_reason = "range berisiko; jangan buka posisi baru sekarang"
 
-    regime = (
+    regime = regime or (
         "EXTREME" if escape >= 0.35 or abs(h1) >= 25 else
         "TRENDING" if abs(h1) >= 8 or abs(h6) >= 20 else
         "CHOPPY" if abs(h1) <= 3 and abs(h6) <= 10 else
@@ -798,7 +1046,7 @@ def _final_intelligence(p, row, mc, range_plan, strategy="balanced"):
             "p50": mc.get("p50") if mc else None,
             "p95": mc.get("p95") if mc else None,
         },
-        "data_quality": {
+        "data_quality": data_quality or {
             "source": "DexScreener live snapshot",
             "historical_candles": 0,
             "confidence": "LOW",
@@ -811,7 +1059,12 @@ def _final_intelligence(p, row, mc, range_plan, strategy="balanced"):
 
 
 def _live_review(pair, horizon_bars=96, mc_paths=2000):
-    """Run the complete live Pool Intelligence pipeline."""
+    """Run the complete live Pool Intelligence pipeline.
+
+    Jalur B (snapshot) selalu jalan. Bila OHLCV asli >= 30 candle tersedia
+    (GeckoTerminal), jalur A (math/range/bootstrap dari candle nyata) menjadi
+    primary dan Merton tetap dibawa sebagai pembanding.
+    """
     p = dex_pair(pair)
     analysis, row = _live_analysis(p)
     ch = p.get("priceChange") or {}
@@ -838,17 +1091,60 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
         0.45 * score01(vol_liq / 0.03), 0, 1
     )
 
-    range_plan = _live_range(price, h1, h6, h24)
-    mc = None
+    live_range = _live_range(price, h1, h6, h24)
+    merton_mc = None
     mc_error = None
     try:
-        mc = snapshot_monte_carlo(
+        merton_mc = snapshot_monte_carlo(
             price, m5, h1, h6, h24, v1, v24, liq, buys, sells, total_tx,
-            range_plan["lower"], range_plan["upper"],
+            live_range["lower"], live_range["upper"],
             max(1, int(horizon_bars)), max(200, int(mc_paths))
         )
     except Exception as exc:
         mc_error = str(exc)
+
+    # ---- Jalur A: OHLCV asli (GeckoTerminal) + fee APR asli (Meteora) ----
+    # Bila candle nyata >= 30 tersedia, engine historical menjadi primary dan
+    # snapshot Merton tetap dibawa sebagai pembanding (monte_carlo_merton).
+    # Kegagalan fetch = jalur snapshot biasa; tidak pernah ada candle sintetis.
+    ohlcv_diag = {"source": "GeckoTerminal", "network": None, "pool": None,
+                  "aggregate": None, "candles": 0, "error": None}
+    candles = []
+    try:
+        candles, ohlcv_diag = fetch_ohlcv(
+            p.get("chainId"), pair, (p.get("baseToken") or {}).get("address")
+        )
+    except Exception as exc:
+        ohlcv_diag["error"] = str(exc)[:160]
+
+    fee_pool = None
+    if row.get("meteora"):
+        try:
+            fee_pool = fetch_meteora_pool(pair)
+        except Exception:
+            fee_pool = None
+    fee_apr = float(fee_pool.get("apr") or 0) if fee_pool else 0.0
+
+    hist = None
+    if len(candles) >= MIN_HISTORICAL_CANDLES:
+        try:
+            bar_minutes = int(ohlcv_diag.get("aggregate") or 15)
+            hist_bars = min(720, max(24, int(horizon_bars) * 15 // bar_minutes))
+            hist = _historical_block(candles, bar_minutes, hist_bars, mc_paths, fee_apr)
+        except Exception as exc:
+            hist = None
+            ohlcv_diag["error"] = "historical engine: " + str(exc)[:160]
+
+    # Primary = data terbaik yang benar-benar tersedia.
+    range_plan = hist["range"] if hist else live_range
+    mc = hist["monte_carlo"] if hist else merton_mc
+
+    if hist:
+        analysis["prediction_status"] = "HISTORICAL_BOOTSTRAP_ACTIVE"
+        analysis["prediction_note"] = (
+            f"Monte Carlo dikalibrasi dari OHLCV nyata ({hist['candles']} candle "
+            f"{hist['bar_minutes']}m, GeckoTerminal); Merton snapshot tetap sebagai pembanding."
+        )
 
     # Keep the legacy risk fields for UI compatibility, but derive them from
     # the same Monte Carlo result used by Final Intelligence.
@@ -883,7 +1179,18 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
     row["risk"] = {"score": risk_score, "out_of_range": mc_out}
 
     intelligence = _final_intelligence(
-        p, row, mc, range_plan, strategy=row.get("lp_strategy", "BALANCED")
+        p, row, mc, range_plan, strategy=row.get("lp_strategy", "BALANCED"),
+        data_quality={
+            "source": ("GeckoTerminal OHLCV + DexScreener snapshot" if hist
+                       else "DexScreener live snapshot"),
+            "historical_candles": hist["candles"] if hist else 0,
+            "confidence": "MEDIUM" if hist else "LOW",
+            "real_ohlcv_available": bool(hist),
+            "ohlcv_source": ohlcv_diag.get("source"),
+            "meteora_bin_metadata_available": False,
+            "fee_is_actual": bool(fee_pool),
+        },
+        regime=hist["regime"] if hist else None,
     )
 
     # Final action for a fresh candidate can only be MASUK or TUNGGU.
@@ -897,6 +1204,24 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
         rebalance_reasons.append("tekanan arah kuat")
     rebalance = bool(rebalance_reasons)
 
+    risk_notes = [
+        "Risk, range, and decision use the same probability model (p_ever_out_of_range).",
+        "Skor discovery memakai fee opportunity proxy turnover; fee APR asli hanya bila pool Meteora.",
+    ]
+    if hist:
+        risk_notes.append(
+            f"Jalur A aktif: {hist['candles']} candle OHLCV asli (GeckoTerminal), regime {hist['regime']}."
+        )
+        if fee_apr <= 0:
+            risk_notes.append("Fee APR pool tidak tersedia; fee yield dihitung 0.")
+    else:
+        risk_notes.append(
+            "Historical OHLCV tidak tersedia; ATR/Z-score/entropy asli tidak diisi (tanpa candle sintetis)."
+        )
+        risk_notes.append(
+            "Monte Carlo memakai Merton jump-diffusion dengan kalibrasi state live."
+        )
+
     return {
         "price": price,
         "formula_engine": FORMULA_ENGINE_VERSION,
@@ -904,12 +1229,15 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
         "analysis": analysis,
         "intelligence": intelligence,
         "decision": intelligence["decision"],
-        "confidence": "LOW · LIVE SNAPSHOT" if mc else "LIVE",
-        "data_source": "DexScreener",
+        "confidence": (
+            "MEDIUM · REAL OHLCV" if hist else
+            "LOW · LIVE SNAPSHOT" if mc else "LIVE"
+        ),
+        "data_source": "DexScreener + GeckoTerminal" if hist else "DexScreener",
         "pair": p.get("pairAddress"),
         "token": (p.get("baseToken") or {}).get("address"),
         "dex": p.get("dexId"),
-        "math": {
+        "math": hist["math"] if hist else {
             "price": price, "atr": None, "atr_pct": None,
             "volatility": None, "volatility_ratio": None, "z_score": None,
             "trend_strength": None, "volume_pressure": round((buy_ratio - 0.5) * 2, 4),
@@ -918,39 +1246,59 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
         },
         "live_metrics": row["live_metrics"],
         "range": range_plan,
+        "range_live": live_range if hist else None,
         "monte_carlo": mc,
-        "monte_carlo_status": "ACTIVE" if mc else "UNAVAILABLE",
+        "monte_carlo_merton": merton_mc if hist else None,
+        "monte_carlo_status": (
+            "BOOTSTRAP_HISTORICAL" if hist else
+            "ACTIVE" if merton_mc else "UNAVAILABLE"
+        ),
         "monte_carlo_error": mc_error,
         "risk": {
             "score": risk_score,
             "out_of_range": mc_out,
-            "out_of_range_source": "MERTON_P_EVER_OUT_OF_RANGE" if mc else "UNAVAILABLE",
-            "il_proxy": None, "fee_yield": None, "fee_il_ratio": None,
-            "notes": [
-                "Risk, range, and decision use the same live snapshot state.",
-                "Historical OHLCV belum tersedia; ATR/Z-score/entropy asli tidak diisi.",
-                "Monte Carlo memakai Merton jump-diffusion dengan kalibrasi state live.",
-                "Fee opportunity adalah proxy turnover, bukan fee APR aktual.",
-            ],
+            "out_of_range_source": (
+                "BOOTSTRAP_P_EVER_OUT_OF_RANGE" if hist else
+                "MERTON_P_EVER_OUT_OF_RANGE" if mc else "UNAVAILABLE"
+            ),
+            "il_proxy": hist["risk"].il_proxy if hist else None,
+            "fee_yield": hist["risk"].expected_fee_yield if hist else None,
+            "fee_il_ratio": hist["risk"].fee_to_il_ratio if hist else None,
+            "fee_apr": fee_apr if fee_pool else None,
+            "notes": risk_notes,
         },
         "rebalance": {
             "rebalance": rebalance,
             "urgency": "HIGH" if mc_out >= 0.50 or risk_score >= 75 else "MEDIUM" if rebalance else "NONE",
             "reasons": rebalance_reasons,
         },
-        "history": 0,
-        "history_status": "NO_REAL_HISTORY",
-        "model_status": "FINAL_INTELLIGENCE_SNAPSHOT" if mc else "LIVE_ONLY",
+        "history": hist["candles"] if hist else 0,
+        "history_status": "REAL_OHLCV_GECKOTERMINAL" if hist else "NO_REAL_HISTORY",
+        "model_status": (
+            "HISTORICAL_BOOTSTRAP_ACTIVE" if hist else
+            "FINAL_INTELLIGENCE_SNAPSHOT" if merton_mc else "LIVE_ONLY"
+        ),
+        "ohlcv": ohlcv_diag,
+        "fee_pool": fee_pool,
         "bin": None,
-        "bin_note": "Bin Meteora belum dihitung tanpa active bin + bin step metadata pool.",
+        "bin_step_bps": (fee_pool or {}).get("bin_step"),
+        "bin_note": (
+            f"bin_step {fee_pool['bin_step']} bps diketahui dari Meteora; "
+            "active bin butuh pembacaan on-chain, jadi bin_engine tidak dijalankan (tidak menebak)."
+            if (fee_pool or {}).get("bin_step") is not None else
+            "Bin Meteora belum dihitung tanpa active bin + bin step metadata pool."
+        ),
     }
 
 
-def scan():
+def scan(limit=None, meteora=None):
     """Tool-Trade radar -> Pool formula pipeline.
 
     Tool-Trade supplies discovery and pair selection. Pool Review supplies
     the actual intelligence, Monte Carlo, range and LP analysis.
+
+    limit   -> optional cap on returned rows (used by the local web terminal)
+    meteora -> when truthy, keep only Meteora DLMM pairs
     """
     discovered, discovery_diag = fetch_dexscreener_pairs()
 
@@ -1093,6 +1441,8 @@ def scan():
                 funnel["row_error_samples"].append(str(exc)[:180])
 
     rows = funnel.pop("_rows", [])
+    if meteora:
+        rows = [r for r in rows if r.get("meteora")]
     rows.sort(
         key=lambda x: (
             x["transactions_1h"],
@@ -1104,6 +1454,11 @@ def scan():
         reverse=True,
     )
     funnel["final"] = len(rows)
+    if limit is not None:
+        try:
+            rows = rows[:max(1, int(limit))]
+        except (TypeError, ValueError):
+            pass
 
     return {
         "generated_at": int(time.time()),
@@ -1123,7 +1478,7 @@ def scan():
 
 
 def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
-    """Review a pool from live DexScreener data without historical OHLCV."""
+    """Review a pool: live DexScreener snapshot + OHLCV asli bila tersedia."""
     return _live_review(pair_address, horizon_bars=horizon_bars, mc_paths=mc_paths)
 
 
