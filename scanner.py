@@ -64,6 +64,33 @@ def continuation_score(price_change,volume,liquidity,txns,buys,sells,age_h,price
     cooldown=1 if price_change_5m<=.08 else score01(1-(price_change_5m-.08)/.20)
     return 100*(.28*pump+.23*vol+.12*liq+.12*activity+.13*pressure+.07*age+.05*cooldown)
 
+MEME_BLOCKLIST = {
+    "SOL","WSOL","USDC","USDT","USDE","DAI","USD1","PYUSD","FDUSD",
+    "BTC","WBTC","ETH","WETH","JITOSOL","MSOL","JUP","JTO","RAY","ORCA","PYTH","LINK","UNI","AAVE"
+}
+MEME_WORDS = {
+    "meme","pepe","dog","doge","cat","frog","inu","shib","wif","bonk",
+    "wojak","chad","trump","moon","pump","baby","goat","mog","popcat",
+    "slerf","pnut","brett","based","kitty","ape"
+}
+MEME_DEXS = {"pumpfun","pump.fun","raydium","meteora","meteora-dlmm","orca"}
+
+def is_memecoin_pair(p):
+    base=p.get("baseToken") or {}
+    symbol=str(base.get("symbol") or "").upper().strip()
+    name=str(base.get("name") or "").lower().strip()
+    dex=str(p.get("dexId") or "").lower().strip()
+    address=str(base.get("address") or "")
+    if not address or symbol in MEME_BLOCKLIST:
+        return False
+    hay=symbol.lower()+" "+name
+    meme_word=any(w in hay for w in MEME_WORDS)
+    meme_dex=any(x in dex for x in MEME_DEXS)
+    stable_words=("usd","stable","wrapped","bitcoin","ethereum","solana")
+    if any(w in hay for w in stable_words) and not meme_word:
+        return False
+    return meme_word or meme_dex
+
 def rank_pair(p):
     ch=p.get("priceChange") or {}; vol=p.get("volume") or {}; tx=p.get("txns") or {}
     h1=float(ch.get("h1") or 0); m5=float(ch.get("m5") or 0)
@@ -136,6 +163,8 @@ def scan(limit=40,only_meteora=False):
 
     for p in fetch_search_pairs():
         try:
+            if not is_memecoin_pair(p):
+                continue
             score,row=rank_pair(p)
             if row["liquidity"] < 500:
                 continue
@@ -178,6 +207,7 @@ def scan(limit=40,only_meteora=False):
             "min_1h_volume_usd_dex":0,
             "min_liquidity_usd_dex":500,
             "unique_tokens":True,
+            "memecoin_only":True,
             "gmgn_enabled":False,
             "gmgn_mode":"web-reference-only",
             "only_meteora":only_meteora
