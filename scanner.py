@@ -345,7 +345,7 @@ def fetch_search_pairs():
         except Exception:
             return []
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures=[pool.submit(one,q) for q in queries]
         for f in as_completed(futures):
             for p in f.result():
@@ -372,7 +372,7 @@ def fetch_search_pairs():
         except Exception:
             return []
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures=[pool.submit(pools,t) for t in dict.fromkeys(seeds[:60])]
         for f in as_completed(futures):
             for p in f.result():
@@ -614,7 +614,7 @@ def _live_review(pair):
 def scan(limit=40, only_meteora=False, strategy="balanced"):
     """DexScreener fresh-meme scanner: young + active + ignition."""
     candidates=[]
-    funnel={"discovered":0,"meme_score":0,"liquidity":0,"age_1_7d":0,
+    funnel={"discovered":0,"meme_score":0,"liquidity":0,"age_1_7d":0,"fallback_mode":False,
             "active_volume":0,"history_checked":0,"history_available":0,
             "pump_30pct":0,"volume_persistence":0,"not_faded":0,
             "fallback_24h":0,"final_before_dedupe":0,"final":0,
@@ -684,6 +684,59 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
             candidates.append(row)
         except Exception:
             continue
+
+    # Controlled fallback keeps the scanner useful during thin market periods.
+    # It is only activated when the strict LP-discovery funnel returns zero rows.
+    if not candidates and discovered:
+        funnel["fallback_mode"] = True
+        for p in discovered:
+            try:
+                meme_score,_=memecoin_score(p)
+                if meme_score < 15:
+                    continue
+                _,row=rank_pair(p,strategy)
+                if row["liquidity"] < 500:
+                    continue
+                age_h=row["age_h"]; h1=row["h1"]; h24=row["h24"]
+                v1=row["v1"]; v24=row["v24"]; liq=row["liquidity"]
+                if not 6 <= age_h <= 168:
+                    continue
+                t1=p.get("txns") or {}
+                h1tx=t1.get("h1") or {}
+                txns=int(h1tx.get("buys") or 0)+int(h1tx.get("sells") or 0)
+                active=(v1 >= max(300,liq*0.0075) or
+                        v24 >= max(2500,liq*0.04) or txns >= 50)
+                if not active:
+                    continue
+                if h1 >= 100 and h24 >= 500:
+                    continue
+                if row["fresh_score"] < 22:
+                    continue
+                if only_meteora and not row["meteora"]:
+                    continue
+
+                row["scan_tier"]="FALLBACK"
+                row["source"]="DexScreener"
+                row["history_available"]=False
+                row["data_confidence"]="LIVE"
+                row["volume_acceleration"]=round(safe_div(v1,max(v24/24,1),0),3)
+                row["volume_persistence"]=round(clamp(
+                    0.55*score01(v24/max(liq*0.15,1))+
+                    0.45*score01(v1/max(liq*0.03,1)),0,1),3)
+                row["pump_pct"]=max(0,h24/100)
+                row["drawdown_from_peak"]=0
+                row["pump_age_h"]=0
+                row["pump_stage"]="FALLBACK_DISCOVERY"
+                row["post_pump_score"]=row["fresh_score"]
+                row["post_pump_edge"]=round(row["fresh_score"],2)
+                row["score"]=clamp(
+                    0.72*row["fresh_score"]+0.18*row["lp_score"]+0.10*meme_score,
+                    0,100)
+                candidates.append(row)
+            except Exception:
+                continue
+    else:
+        funnel["fallback_mode"] = False
 
     funnel["fallback_24h"]=len(candidates)
     funnel["final_before_dedupe"]=len(candidates)
