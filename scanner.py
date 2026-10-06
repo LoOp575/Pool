@@ -4,72 +4,13 @@ import json, math, time, urllib.request, urllib.parse
 
 UA="pool-dlmm-dashboard/1.0"; DEX_URL="https://api.dexscreener.com"; TIMEOUT=8\nimport os, uuid
 
-GMGN_URL="https://openapi.gmgn.ai"
+GMGN_WEB_URL="https://gmgn.ai/sol/token/"
 
-def fetch_gmgn_rank(limit=100):
-    key=os.getenv("GMGN_API_KEY","").strip()
-    if not key:
-        return []
-    q={
-        "chain":"sol","interval":"1h","limit":min(limit,100),
-        "order_by":"volume","direction":"desc",
-        "timestamp":int(time.time()),"client_id":str(uuid.uuid4())
-    }
-    url=GMGN_URL+"/v1/market/rank?"+urllib.parse.urlencode(q)
-    try:
-        data=get_json_auth(url,key)
-        rank=((data.get("data") or {}).get("rank") or [])
-        out=[]
-        for x in rank:
-            addr=x.get("address")
-            if not addr: continue
-            out.append({
-                "token":addr,"base":x.get("symbol") or "?",
-                "price":float(x.get("price") or 0),
-                "h1":float(x.get("price_change_percent1h") or x.get("price_change_percent") or 0),
-                "m5":float(x.get("price_change_percent5m") or 0),
-                "h6":float(x.get("price_change_percent6h") or 0),
-                "h24":float(x.get("price_change_percent24h") or 0),
-                "v1":float(x.get("volume") or 0),
-                "liquidity":float(x.get("liquidity") or 0),
-                "buys":int(x.get("buys") or 0),"sells":int(x.get("sells") or 0),
-                "dex":x.get("exchange") or x.get("launchpad_platform") or "GMGN",
-                "platform":x.get("launchpad_platform") or "",
-                "source":"GMGN",
-            })
-        return out
-    except Exception:
-        return []
-
-def get_json_auth(url,key):
-    req=urllib.request.Request(url,headers={"User-Agent":UA,"Accept":"application/json","X-APIKEY":key})
-    with urllib.request.urlopen(req,timeout=TIMEOUT) as r:return json.loads(r.read().decode())
+def gmgn_url(token):
+    return GMGN_WEB_URL + urllib.parse.quote(str(token or ""), safe="")
 
 def gmgn_rows(limit=100):
-    rows=[]
-    for x in fetch_gmgn_rank(limit):
-        h1=x["h1"]; v1=x["v1"]; liq=x["liquidity"]
-        if h1 < 8 or v1 < 10000 or liq < 5000:
-            continue
-        buy_ratio=safe_div(x["buys"],x["buys"]+x["sells"],.5)
-        vol_liq=safe_div(v1,liq)
-        pump=score01((h1-.08)/1.20)
-        vol=score01(math.log1p(max(v1,0))/math.log1p(5_000_000))
-        liq_s=score01(math.log1p(max(liq,0))/math.log1p(1_000_000))
-        pressure=score01((buy_ratio-.35)/.30)
-        score=100*(.34*pump+.32*vol+.16*liq_s+.18*pressure)
-        rows.append({
-            "price":x["price"],"h1":h1,"m5":x["m5"],"h6":x["h6"],"h24":x["h24"],
-            "v1":v1,"v24":0,"liquidity":liq,"buy_ratio":buy_ratio,"vol_liq":vol_liq,
-            "age_h":0,"pair":None,"token":x["token"],"dex":x["dex"],
-            "url":"https://gmgn.ai/sol/token/"+x["token"],"base":x["base"],"quote":"SOL",
-            "score":clamp(score,0,100),"meteora":"meteora" in (x["platform"]+" "+x["dex"]).lower(),
-            "source":"GMGN","platform":x["platform"]
-        })
-    return rows
-
-
-
+    return []
 def get_json(url):
     req=urllib.request.Request(url,headers={"User-Agent":UA,"Accept":"application/json"})
     with urllib.request.urlopen(req,timeout=TIMEOUT) as r:return json.loads(r.read().decode())
@@ -119,7 +60,7 @@ def rank_pair(p):
       "vol_liq":vol_liq,"age_h":age_h,"pair":p.get("pairAddress"),"dex":p.get("dexId"),
       "url":p.get("url"),"base":p.get("baseToken",{}).get("symbol"),
       "quote":p.get("quoteToken",{}).get("symbol"),"score":clamp(s,0,100),
-      "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"}}
+      "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"}, "token":(p.get("baseToken") or {}).get("address"), "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))}
 
 def scan(limit=40,only_meteora=False):
     candidates=[]
@@ -127,16 +68,10 @@ def scan(limit=40,only_meteora=False):
         for p in fetch_pairs(seed.get("tokenAddress")):
             if p.get("chainId")!="solana":continue
             score,row=rank_pair(p)
-            if row["h1"]<15 or row["v1"]<20_000 or row["liquidity"]<10_000:continue
+            if row["h1"]<8 or row["v1"]<10_000 or row["liquidity"]<5_000:continue
             row["source"]="DexScreener"
             if only_meteora and not row["meteora"]:continue
             candidates.append(row)
-
-    # GMGN adds a second discovery universe; it is intentionally less strict
-    # so tokens found only by GMGN can enter the common ranking.
-    gm=gmgn_rows(max(100,limit*2))
-    if only_meteora: gm=[x for x in gm if x["meteora"]]
-    candidates.extend(gm)
 
     dedup={}
     for x in candidates:
@@ -147,8 +82,8 @@ def scan(limit=40,only_meteora=False):
     sources=sorted(set(x.get("source","unknown") for x in rows))
     return {"generated_at":int(time.time()),"count":len(rows),"rows":rows,
             "source":" + ".join(sources) if sources else "none",
-            "filters":{"min_1h_pump_dex":15,"min_1h_volume_usd_dex":20000,
-                       "min_liquidity_usd_dex":10000,"gmgn_enabled":bool(os.getenv("GMGN_API_KEY")),
+            "filters":{"min_1h_pump_dex":8,"min_1h_volume_usd_dex":10000,
+                       "min_liquidity_usd_dex":5000,"gmgn_enabled":False,"gmgn_mode":"web-reference-only",
                        "only_meteora":only_meteora}}
 
 if __name__=="__main__":
