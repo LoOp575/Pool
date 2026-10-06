@@ -1140,8 +1140,8 @@ def scan(limit=40, only_meteora=False, strategy="balanced"):
         },
         "funnel": funnel,
         "discovery_status": (
-            "OK" if discovery_diag.get("solana_pairs", 0)
-            else "NO_SOLANA_PAIRS"
+            "OK" if discovery_diag.get("pairs", 0)
+            else "NO_PAIRS"
         ),
     }
 
