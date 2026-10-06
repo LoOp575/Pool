@@ -27,7 +27,7 @@ FORMULA_ENGINE_VERSION = "POOL-INTEL-3"
 
 
 def fetch_seed_tokens():
-    """Fast DexScreener discovery across all chains."""
+    """Tool-Trade discovery: boosted tokens from DexScreener, all chains."""
     paths = (
         "/token-boosts/latest/v1",
         "/token-boosts/top/v1",
@@ -40,7 +40,8 @@ def fetch_seed_tokens():
         except Exception as exc:
             return [], str(exc)[:180]
 
-    out = {}
+    seen = set()
+    out = []
     errors = []
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(one, paths))
@@ -53,69 +54,59 @@ def fetch_seed_tokens():
                 continue
             chain = str(item.get("chainId") or "").strip().lower()
             address = item.get("tokenAddress")
-            if chain and address:
-                address = str(address)
-                out[f"{chain}:{address.lower()}"] = {
-                    "chainId": chain,
-                    "tokenAddress": address,
-                }
+            if not chain or not address:
+                continue
+            address = str(address)
+            key = f"{chain}:{address.lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"chainId": chain, "tokenAddress": address})
 
-    # One batch keeps the Vercel request bounded and mirrors Tool-Trade's
-    # DexScreener discovery pattern.
-    return list(out.values())[:30], errors
+    return out[:300], errors
 
 
 def fetch_pairs_batch(tokens):
-    """Resolve up to 30 discovered tokens in one DexScreener request."""
+    """Tool-Trade discovery: resolve tokens in DexScreener batches."""
     if not tokens:
         return [], 0, []
 
-    addresses = ",".join(t["tokenAddress"] for t in tokens[:30])
-    try:
-        data = get_json(
-            DEX_URL + "/latest/dex/tokens/" +
-            urllib.parse.quote(addresses, safe=",")
-        )
-        pairs = data.get("pairs") or [] if isinstance(data, dict) else []
-        return pairs, 0, []
-    except Exception as exc:
-        return [], 1, [{"stage": "token-batch", "error": str(exc)[:180]}]
-
-
-def fetch_pairs_fallback(tokens):
-    """Small bounded fallback if the batch endpoint fails."""
-    if not tokens:
-        return [], []
-
-    def one(token):
-        try:
-            data = get_json(
-                DEX_URL + "/token-pairs/v1/" +
-                urllib.parse.quote(str(token.get("chainId") or "").strip().lower(), safe="") + "/" +
-                urllib.parse.quote(token["tokenAddress"], safe="")
-            )
-            return data if isinstance(data, list) else [], None
-        except Exception as exc:
-            return [], str(exc)[:180]
-
-    out = []
+    batches = [tokens[i:i + 30] for i in range(0, len(tokens), 30)]
+    all_pairs = []
     errors = []
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        results = list(pool.map(one, tokens[:12]))
-    for pairs, err in results:
-        out.extend(pairs)
-        if err and len(errors) < 8:
-            errors.append({"stage": "pair-fallback", "error": err})
-    return out, errors
+    cursor = 0
+
+    def worker():
+        nonlocal cursor
+        while True:
+            idx = cursor
+            cursor += 1
+            if idx >= len(batches):
+                return
+            batch = batches[idx]
+            addresses = ",".join(t["tokenAddress"] for t in batch)
+            try:
+                data = get_json(
+                    DEX_URL + "/latest/dex/tokens/" +
+                    urllib.parse.quote(addresses, safe=",")
+                )
+                pairs = data.get("pairs") or [] if isinstance(data, dict) else []
+                all_pairs.extend(pairs)
+            except Exception as exc:
+                if len(errors) < 8:
+                    errors.append({"stage": "token-batch", "error": str(exc)[:180]})
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: worker(), range(4)))
+
+    return all_pairs, len(errors), errors
 
 
 def fetch_dexscreener_pairs():
-    """Single-purpose DexScreener discovery. No coin-name keyword search."""
+    """Tool-Trade radar source. No keyword search and no chain restriction."""
     diag = {
+        "source": "Tool-Trade",
         "feed_tokens": 0,
-        "expanded_tokens": 0,
-        "expanded_pairs": 0,
-        "fallback_pairs": 0,
         "pairs": 0,
         "chains": {},
         "errors": [],
@@ -123,31 +114,27 @@ def fetch_dexscreener_pairs():
 
     tokens, feed_errors = fetch_seed_tokens()
     diag["feed_tokens"] = len(tokens)
-    diag["expanded_tokens"] = len(tokens)
     diag["errors"].extend(feed_errors[:8])
 
-    pairs, failed_batches, batch_errors = fetch_pairs_batch(tokens)
-    diag["expanded_pairs"] = len(pairs)
+    pairs, batch_failures, batch_errors = fetch_pairs_batch(tokens)
     diag["errors"].extend(batch_errors[:8])
-
-    if not pairs and tokens:
-        fallback, fallback_errors = fetch_pairs_fallback(tokens)
-        diag["fallback_pairs"] = len(fallback)
-        diag["errors"].extend(fallback_errors[:8])
-        pairs.extend(fallback)
+    diag["batch_failures"] = batch_failures
 
     unique = {}
     for pair in pairs:
         if not isinstance(pair, dict):
             continue
         chain = str(pair.get("chainId") or "").strip().lower()
-        address = pair.get("pairAddress")
-        if chain and address:
-            unique[f"{chain}:{address}"] = pair
-            diag["chains"][chain] = int(diag["chains"].get(chain, 0)) + 1
+        address = str(pair.get("pairAddress") or "").strip()
+        if not chain or not address:
+            continue
+        unique[f"{chain}:{address.lower()}"] = pair
+
+    for pair in unique.values():
+        chain = str(pair.get("chainId") or "").strip().lower()
+        diag["chains"][chain] = int(diag["chains"].get(chain, 0)) + 1
 
     diag["pairs"] = len(unique)
-    diag["batch_failures"] = failed_batches
     return list(unique.values()), diag
 
 def continuation_score(price_change,volume,liquidity,txns,buys,sells,age_h,price_change_5m=0):
@@ -960,14 +947,19 @@ def _live_review(pair, horizon_bars=96, mc_paths=2000):
 
 
 def scan():
-    """Fast DexScreener filter. Scanner discovers; Review analyzes."""
+    """Tool-Trade radar -> Pool formula pipeline.
+
+    This layer only discovers and applies Tool-Trade's server-side eligibility
+    filters. It does not calculate Pool intelligence, Monte Carlo, range, IL,
+    fees, or final decisions. Those remain in Review.
+    """
     discovered, discovery_diag = fetch_dexscreener_pairs()
 
     funnel = {
         "discovered": len(discovered),
         "chains": 0,
         "token_data": 0,
-        "age": 0,
+        "liquidity": 0,
         "volume": 0,
         "activity": 0,
         "final": 0,
@@ -981,34 +973,25 @@ def scan():
     for p in discovered:
         try:
             chain = str(p.get("chainId") or "").strip().lower()
-            if not chain:
-                continue
-            funnel["chains"] = funnel.get("chains", 0) + 1
-
             base = p.get("baseToken") or {}
             token = str(base.get("address") or "").strip()
             symbol = str(base.get("symbol") or "").strip()
             name = str(base.get("name") or "").strip()
             pair = str(p.get("pairAddress") or "").strip()
-            if not token or not symbol or not pair:
+
+            if not chain or not token or not symbol or not pair:
                 continue
+            funnel["chains"] += 1
             funnel["token_data"] += 1
 
-            created = p.get("pairCreatedAt")
-            if not created:
+            liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
+            if liquidity < 10_000:
                 continue
-            age_h = max(
-                0.0,
-                (time.time() * 1000 - float(created)) / 3600000
-            )
-            if not 0.25 <= age_h <= 168:
-                continue
-            funnel["age"] += 1
+            funnel["liquidity"] += 1
 
             volume = p.get("volume") or {}
             txns = p.get("txns") or {}
             changes = p.get("priceChange") or {}
-
             v1 = float(volume.get("h1") or 0)
             v6 = float(volume.get("h6") or 0)
             v24 = float(volume.get("h24") or 0)
@@ -1016,7 +999,6 @@ def scan():
             t1 = txns.get("h1") or {}
             t6 = txns.get("h6") or {}
             t24 = txns.get("h24") or {}
-
             buys_1h = int(t1.get("buys") or 0)
             sells_1h = int(t1.get("sells") or 0)
             buys_6h = int(t6.get("buys") or 0)
@@ -1024,25 +1006,23 @@ def scan():
             buys_24h = int(t24.get("buys") or 0)
             sells_24h = int(t24.get("sells") or 0)
 
-            total_1h = buys_1h + sells_1h
-            total_6h = buys_6h + sells_6h
-            total_24h = buys_24h + sells_24h
-
-            # The scanner only needs live flow. No score, formula, or
-            # memecoin identity is calculated here.
-            if max(v1, v6, v24) <= 0:
+            if v1 <= 0:
                 continue
             funnel["volume"] += 1
 
-            if max(total_1h, total_6h, total_24h) <= 0:
+            if buys_1h < 1:
                 continue
             funnel["activity"] += 1
 
-            liquidity = float((p.get("liquidity") or {}).get("usd") or 0)
-            price = float(p.get("priceUsd") or 0)
-            h1 = float(changes.get("h1") or 0)
-            h6 = float(changes.get("h6") or 0)
-            h24 = float(changes.get("h24") or 0)
+            created = p.get("pairCreatedAt")
+            age_h = (
+                max(0.0, (time.time() * 1000 - float(created)) / 3_600_000)
+                if created else None
+            )
+
+            total_1h = buys_1h + sells_1h
+            total_6h = buys_6h + sells_6h
+            total_24h = buys_24h + sells_24h
             buy_ratio = safe_div(buys_1h, total_1h, 0.5)
 
             row = {
@@ -1054,9 +1034,9 @@ def scan():
                 "pair": pair,
                 "dex": p.get("dexId"),
                 "url": p.get("url"),
-                "price": price,
-                "age_h": round(age_h, 2),
-                "age_days": round(age_h / 24, 2),
+                "price": float(p.get("priceUsd") or 0),
+                "age_h": round(age_h, 2) if age_h is not None else None,
+                "age_days": round(age_h / 24, 2) if age_h is not None else None,
                 "volume_1h": v1,
                 "volume_6h": v6,
                 "volume_24h": v24,
@@ -1071,18 +1051,12 @@ def scan():
                 "transactions_24h": total_24h,
                 "buy_ratio_1h": round(buy_ratio, 4),
                 "liquidity": liquidity,
-                "h1": h1,
-                "h6": h6,
-                "h24": h24,
-                "pump_signal": max(h1, h6, h24) > 0,
-                "pump_window": (
-                    "1H" if h1 > 0 else
-                    "6H" if h6 > 0 else
-                    "24H" if h24 > 0 else None
-                ),
-                "scan_tier": "DEXSCREENER_FLOW",
+                "h1": float(changes.get("h1") or 0),
+                "h6": float(changes.get("h6") or 0),
+                "h24": float(changes.get("h24") or 0),
+                "scan_tier": "TOOL_TRADE_RADAR",
                 "scanner_role": "FILTER_ONLY",
-                "source": "DexScreener",
+                "source": "Tool-Trade / DexScreener",
                 "history_available": False,
                 "data_confidence": "LIVE",
                 "meteora": str(p.get("dexId") or "").lower() in {
@@ -1091,17 +1065,18 @@ def scan():
                 "gmgn_url": gmgn_url(token),
             }
 
-            old = by_token.get(token)
-            new_key = (total_1h, v1, total_6h, v6, v24)
+            key = f"{chain}:{token.lower()}"
+            old = by_token.get(key)
+            new_key = (total_1h, v1, liquidity, total_6h, v6)
             old_key = (
                 old["transactions_1h"],
                 old["volume_1h"],
+                old["liquidity"],
                 old["transactions_6h"],
                 old["volume_6h"],
-                old["volume_24h"],
             ) if old else None
             if old is None or new_key > old_key:
-                by_token[token] = row
+                by_token[key] = row
 
         except Exception as exc:
             funnel["row_errors"] += 1
@@ -1113,9 +1088,9 @@ def scan():
         key=lambda x: (
             x["transactions_1h"],
             x["volume_1h"],
+            x["liquidity"],
             x["transactions_6h"],
             x["volume_6h"],
-            x["volume_24h"],
         ),
         reverse=True,
     )
@@ -1126,21 +1101,18 @@ def scan():
         "generated_at": int(time.time()),
         "count": len(rows),
         "rows": rows,
-        "source": "DexScreener" if rows else "none",
+        "source": "Tool-Trade / DexScreener" if rows else "none",
         "filters": {
-            "discovery_source": "DexScreener API",
-            "age_hours_min": 0.25,
-            "age_hours_max": 168,
-            "requires_live_volume": True,
-            "requires_live_activity": True,
+            "discovery_source": "Tool-Trade pipeline",
+            "min_liquidity_usd": 10_000,
+            "requires_h1_buy": True,
+            "requires_h1_volume": True,
             "scanner_role": "FILTER_ONLY",
         },
         "funnel": funnel,
-        "discovery_status": (
-            "OK" if discovery_diag.get("pairs", 0)
-            else "NO_PAIRS"
-        ),
+        "discovery_status": "OK" if discovery_diag.get("pairs", 0) else "NO_PAIRS",
     }
+
 
 def review_pair(pair_address, fee_apr=0, horizon_bars=96, mc_paths=2000):
     """Review a pool from live DexScreener data without historical OHLCV."""
