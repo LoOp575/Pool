@@ -81,29 +81,89 @@ def rank_pair(p):
       "quote":p.get("quoteToken",{}).get("symbol"),"score":clamp(s,0,100),
       "meteora":str(p.get("dexId","")).lower() in {"meteora","meteora-dlmm","meteora-dlmm2"}, "token":(p.get("baseToken") or {}).get("address"), "gmgn_url":gmgn_url((p.get("baseToken") or {}).get("address"))}
 
+def fetch_search_pairs():
+    """Direct broad pair discovery; avoids token->pairs request fan-out."""
+    pairs={}
+    queries=["SOL","USDC","USDT","pump","meme","pepe","dog","cat","ai","inu","moon","bonk","wif"]
+    for q in queries:
+        try:
+            data=get_json(DEX_URL+"/latest/dex/search?"+urllib.parse.urlencode({"q":q}))
+            for p in (data.get("pairs") or []) if isinstance(data,dict) else []:
+                if p.get("chainId") != "solana":
+                    continue
+                addr=p.get("pairAddress")
+                if addr:
+                    pairs[addr]=p
+        except Exception:
+            continue
+    return list(pairs.values())
+
+
 def scan(limit=40,only_meteora=False):
     candidates=[]
+
+    # Primary discovery: process DexScreener search results directly.
+    for p in fetch_search_pairs():
+        try:
+            score,row=rank_pair(p)
+            # Discovery gate is intentionally very permissive. Ranking does the
+            # heavy lifting; this gate only removes completely dead pools.
+            if row["liquidity"] < 500 or (row["v1"] < 100 and row["h1"] == 0):
+                continue
+            row["source"]="DexScreener"
+            if only_meteora and not row["meteora"]:
+                continue
+            candidates.append(row)
+        except Exception:
+            continue
+
+    # Secondary discovery from profiles/boosts.
+    seen={x.get("pair") for x in candidates if x.get("pair")}
     for seed in fetch_seed_tokens():
         for p in fetch_pairs(seed.get("tokenAddress")):
-            if p.get("chainId")!="solana":continue
-            score,row=rank_pair(p)
-            if row["v1"]<500 or row["liquidity"]<1_000:continue
-            row["source"]="DexScreener"
-            if only_meteora and not row["meteora"]:continue
-            candidates.append(row)
+            if p.get("chainId")!="solana":
+                continue
+            try:
+                score,row=rank_pair(p)
+                if row["liquidity"] < 500:
+                    continue
+                if row.get("pair") in seen:
+                    continue
+                row["source"]="DexScreener"
+                if only_meteora and not row["meteora"]:
+                    continue
+                candidates.append(row)
+                seen.add(row.get("pair"))
+            except Exception:
+                continue
 
     dedup={}
     for x in candidates:
         key=x.get("pair") or ("token:"+x.get("token",""))
         if key not in dedup or x["score"]>dedup[key]["score"]:
             dedup[key]=x
-    rows=sorted(dedup.values(),key=lambda x:(x["meteora"],x["score"],x["v1"]),reverse=True)[:limit]
+
+    rows=sorted(
+        dedup.values(),
+        key=lambda x:(x["score"],x["v1"],x["liquidity"]),
+        reverse=True
+    )[:limit]
+
     sources=sorted(set(x.get("source","unknown") for x in rows))
-    return {"generated_at":int(time.time()),"count":len(rows),"rows":rows,
-            "source":" + ".join(sources) if sources else "none",
-            "filters":{"min_1h_pump_dex":0,"min_1h_volume_usd_dex":500,
-                       "min_liquidity_usd_dex":1000,"gmgn_enabled":False,"gmgn_mode":"web-reference-only",
-                       "only_meteora":only_meteora}}
+    return {
+        "generated_at":int(time.time()),
+        "count":len(rows),
+        "rows":rows,
+        "source":" + ".join(sources) if sources else "none",
+        "filters":{
+            "min_1h_pump_dex":0,
+            "min_1h_volume_usd_dex":100,
+            "min_liquidity_usd_dex":500,
+            "gmgn_enabled":False,
+            "gmgn_mode":"web-reference-only",
+            "only_meteora":only_meteora
+        }
+    }
 
 if __name__=="__main__":
  import argparse
