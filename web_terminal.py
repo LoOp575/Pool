@@ -2,7 +2,7 @@ import argparse,json
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs,urlparse
-from scanner import scan
+from scanner import scan,review_pair
 STATIC=Path(__file__).resolve().parent/"static"
 class Handler(BaseHTTPRequestHandler):
  def send_json(self,status,payload):
@@ -14,6 +14,13 @@ class Handler(BaseHTTPRequestHandler):
   elif path=="/api/scan":
    try:
     q=parse_qs(urlparse(self.path).query);limit=min(max(int(q.get("limit",["40"])[0]),1),100);met=q.get("meteora",["0"])[0]=="1";self.send_json(200,scan(limit,met))
+   except Exception as e:self.send_json(502,{"error":str(e)})
+  elif path=="/api/review":
+   try:
+    q=parse_qs(urlparse(self.path).query);pair=q.get("pair",[""])[0]
+    if not pair:raise ValueError("pair wajib diisi")
+    horizon=min(max(int(q.get("horizon",["96"])[0]),1),192);paths=min(max(int(q.get("paths",["2000"])[0]),200),5000)
+    self.send_json(200,review_pair(pair,horizon_bars=horizon,mc_paths=paths))
    except Exception as e:self.send_json(502,{"error":str(e)})
   elif path=="/healthz":self.send_json(200,{"ok":True})
   else:self.send_json(404,{"error":"not found"})
